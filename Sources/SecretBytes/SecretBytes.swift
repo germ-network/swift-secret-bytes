@@ -18,8 +18,8 @@ import Foundation
 ///
 /// There is deliberately no third: no `Codable`, no `var data`, no `Hashable`
 /// (a secret's hash is a leak vector), and reflection is redacted.
-public struct SecretBytes: Sendable, Equatable, CustomStringConvertible,
-	CustomDebugStringConvertible, CustomReflectable
+public struct SecretBytes: Sendable, Equatable, ContiguousBytes,
+	CustomStringConvertible, CustomDebugStringConvertible, CustomReflectable
 {
 	/// Zeroizing backing. Kept `internal` so the only same-module reader is
 	/// `SecretArchive.seal`; there is no public accessor for it.
@@ -57,6 +57,16 @@ public struct SecretBytes: Sendable, Equatable, CustomStringConvertible,
 	/// Constant-time equality, forwarded from `SymmetricKey`. Exposed on
 	/// purpose: hiding it pushes callers toward hand-rolled byte comparisons
 	/// that leak timing.
+	///
+	/// - Note: `ContiguousBytes` conformance (below) is deliberate and adds no
+	///   capability — its sole requirement is `withUnsafeBytes`, which is
+	///   already public here. It exists so a secret can be handed to a
+	///   `some ContiguousBytes` parameter (swift-crypto's KDFs, AEADs, and
+	///   `SymmetricKey.init(data:)`) with no copy and no intermediate `Data`.
+	///   Without it the ergonomic path is `withUnsafeBytes { Data($0) }`,
+	///   which mints an unscrubbed copy per call on hot paths — a regression
+	///   this type exists to prevent. `SymmetricKey` itself conforms for the
+	///   same reason (`SymmetricKeys.swift:77`).
 	public static func == (lhs: SecretBytes, rhs: SecretBytes) -> Bool {
 		lhs.symmetricKey == rhs.symmetricKey
 	}
