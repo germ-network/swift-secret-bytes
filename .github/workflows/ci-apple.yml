@@ -28,8 +28,8 @@ jobs:
         destination:
           - "platform=macOS"
           - "platform=macOS,variant=Mac Catalyst"
-          - "platform=iOS Simulator,name=iPhone 17e"
-          - "platform=iOS Simulator,name=iPhone Air"
+          - "platform=iOS Simulator,name=iPhone 17e,OS=27.0"
+          - "platform=iOS Simulator,name=iPhone Air,OS=27.0"
     steps:
       - uses: actions/checkout@v5
       - name: Test platform ${{ matrix.destination }}

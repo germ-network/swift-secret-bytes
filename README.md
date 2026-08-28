@@ -56,13 +56,18 @@ and must never be described as a guarantee.
 addresses parts of this ceiling directly, and `SecretBytes` adopts it behind
 availability gates —
 [`init(copyingWithZeroing:)`](https://developer.apple.com/documentation/cryptokit/symmetrickey/init(copyingwithzeroing:))
-(creates a key and zeroes the source buffer) and
+(exposed as `SecretBytes.init(copyingWithZeroing:)`: creates a key and zeroes
+the source buffer — note the scrub covers only the span's own storage, so a
+source that was copied to produce the span, e.g. a `CoW`-shared `Array`,
+leaves its original allocation untouched) and
 [`init(size:initializingWith:)`](https://developer.apple.com/documentation/cryptokit/symmetrickey/init(size:initializingwith:))
-(writes key material directly into zeroizing storage, no staging buffer). The
-deployment floor is unchanged; the members exist when building with the
-Xcode 27 SDK and are `@available` from OS 27. They are CryptoKit-only —
-swift-crypto has no counterpart yet, so Linux keeps the portable path.
-`SymmetricKey.bytes: RawSpan` is not forwarded: returning a non-escapable
+(exposed as `SecretBytes.init(byteCount:initializingWith:)`: writes key
+material directly into zeroizing storage, no staging buffer — a callback that
+doesn't fill the span traps). The deployment floor is unchanged; the gate
+checks CryptoKit's module version, so the members must actually be present in
+the SDK the package is compiled against — not just a Swift 6.4 toolchain. They
+are CryptoKit-only — swift-crypto has no counterpart yet, so Linux keeps the
+portable path. `SymmetricKey.bytes: RawSpan` is not forwarded: returning a non-escapable
 type still requires an experimental language feature.
 
 To report a suspected vulnerability, see [SECURITY.md](./SECURITY.md).

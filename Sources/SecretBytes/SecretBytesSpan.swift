@@ -1,9 +1,15 @@
 // Span-based CryptoKit API, adopted where the SDK provides it. The compile
 // gate needs both halves: CryptoKit (Darwin — swift-crypto has no counterpart,
-// so Linux keeps the portable path) and the Xcode 27 toolchain (Swift 6.4+),
-// whose SDK is the first to declare these members. The deployment floor is
-// unchanged; callers on earlier OS versions gate with `if #available`.
-#if canImport(CryptoKit) && compiler(>=6.4)
+// so Linux keeps the portable path) and CryptoKit's OS-27 module version,
+// which is the first to declare these members. `_version: 383` is the
+// `-user-module-version` CryptoKit ships with the Xcode 27 beta 6 SDK — a
+// toolchain(>=6.4) check alone is insufficient, since a 6.4 toolchain paired
+// with an older SDK (a mixed DEVELOPER_DIR/SDKROOT, a swift.org snapshot) has
+// the language feature but not the members, which would otherwise fail the
+// whole package to compile. Bump this if a later SDK changes the version and
+// the gate stops tracking availability. The deployment floor is unchanged;
+// callers on earlier OS versions gate with `if #available`.
+#if canImport(CryptoKit, _version: 383) && compiler(>=6.4)
 	import Crypto
 
 	@available(
@@ -23,14 +29,21 @@
 
 		/// Creates `byteCount` secret bytes by writing directly into the final
 		/// zeroizing allocation — no staging buffer exists at any point. The
-		/// callback must fill the span completely.
+		/// callback must fill the span completely; a short fill traps rather
+		/// than silently producing a weaker key.
 		public init<E: Error>(
 			byteCount: Int,
 			initializingWith callback: (inout OutputRawSpan) throws(E) -> Void
 		) throws(E) {
 			precondition(byteCount > 0, "SecretBytes must hold at least one byte")
-			self.symmetricKey = try SymmetricKey(
-				size: .init(bitCount: byteCount * 8), initializingWith: callback)
+			self.symmetricKey = try SymmetricKey(size: .init(bitCount: byteCount * 8)) {
+				(span: inout OutputRawSpan) throws(E) in
+				try callback(&span)
+				precondition(
+					span.isFull,
+					"initializingWith callback filled \(span.byteCount) of \(byteCount) bytes"
+				)
+			}
 		}
 	}
 #endif

@@ -8,7 +8,10 @@
 	/// the tests skip.
 	final class SpanAPITests: XCTestCase {
 		func testCopyingWithZeroingRoundTripsAndZeroesSource() throws {
-			guard #available(iOS 27.0, macOS 27.0, *) else {
+			guard
+				#available(iOS 27.0, macOS 27.0, watchOS 27.0, tvOS 27.0,
+				macCatalyst 27.0, visionOS 27.0, *)
+			else {
 				throw XCTSkip("requires the OS 27 runtime")
 			}
 			var source: [UInt8] = Array(repeating: 0xAB, count: 32)
@@ -28,7 +31,10 @@
 		}
 
 		func testInitializingWithWritesDirectlyIntoKey() throws {
-			guard #available(iOS 27.0, macOS 27.0, *) else {
+			guard
+				#available(iOS 27.0, macOS 27.0, watchOS 27.0, tvOS 27.0,
+				macCatalyst 27.0, visionOS 27.0, *)
+			else {
 				throw XCTSkip("requires the OS 27 runtime")
 			}
 			let secret = SecretBytes(byteCount: 16) { span in
