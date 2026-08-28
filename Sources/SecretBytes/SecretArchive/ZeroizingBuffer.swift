@@ -70,7 +70,7 @@ final class ZeroizingBuffer: ManagedBuffer<Int, UInt8> {
 		{
 			let buffer = allocate(minimumCapacity: byteCount)
 			buffer.withUnsafeMutablePointerToElements { elements in
-				UnsafeMutableRawBufferPointer(
+				_ = UnsafeMutableRawBufferPointer(
 					start: elements, count: buffer.capacity
 				)
 				.initializeMemory(as: UInt8.self, repeating: sentinel)
