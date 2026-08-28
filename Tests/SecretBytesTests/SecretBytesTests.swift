@@ -31,6 +31,39 @@ final class SecretBytesTests: XCTestCase {
 		XCTAssertEqual(secret.byteCount, bytes.count)
 	}
 
+	/// `SymmetricKey`'s constant-time compare returns false for zero-length
+	/// input, which made an empty secret compare unequal to itself. Reachable
+	/// via `init(bytes:)` and via `Reader.readSecret()` on a zero-length
+	/// field, so `Equatable`'s reflexivity requirement was genuinely broken.
+	func testEmptySecretIsEqualToItself() {
+		let empty = SecretBytes(bytes: [] as [UInt8])
+		let alsoEmpty = SecretBytes(bytes: [] as [UInt8])
+
+		XCTAssertEqual(empty.byteCount, 0)
+		XCTAssertEqual(empty, empty, "reflexivity: an empty secret must equal itself")
+		XCTAssertEqual(empty, alsoEmpty, "two empty secrets must compare equal")
+	}
+
+	func testEmptySecretIsNotEqualToNonEmpty() {
+		let empty = SecretBytes(bytes: [] as [UInt8])
+		let nonEmpty = SecretBytes(bytes: [0])
+
+		XCTAssertNotEqual(empty, nonEmpty)
+		XCTAssertNotEqual(nonEmpty, empty)
+	}
+
+	/// An empty secret restored from an archive must behave like any other.
+	func testEmptySecretFromReaderIsEqualToItself() throws {
+		var writer = SecretArchive.Writer()
+		writer.writeSecret(SecretBytes(bytes: [] as [UInt8]))
+		var reader = SecretArchive.Reader(writer.finalize())
+
+		let restored = try reader.readSecret()
+		XCTAssertEqual(restored.byteCount, 0)
+		XCTAssertEqual(restored, restored)
+		XCTAssertEqual(restored, SecretBytes(bytes: [] as [UInt8]))
+	}
+
 	func testEqualityIsValueBased() {
 		let a = SecretBytes(bytes: [9, 9, 9])
 		let b = SecretBytes(bytes: [9, 9, 9])
