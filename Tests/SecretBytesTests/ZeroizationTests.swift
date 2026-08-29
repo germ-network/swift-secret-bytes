@@ -52,20 +52,25 @@ final class ZeroizationTests: XCTestCase {
 		)
 	}
 
-	/// Growth must scrub the abandoned allocation. Writing past the initial
-	/// reservation forces a realloc; the old buffer's deinit records the witness.
-	func testWriterGrowthScrubsOldAllocation() {
+	/// Encoding allocates the archive buffer exactly once — no growth, so no
+	/// abandoned allocations — and the finished archive scrubs on release.
+	func testArchiveBufferScrubsOnRelease() throws {
 		ZeroizingBuffer.ScrubWitness.lastDeinitAllZero = nil
 		ZeroizingBuffer.ScrubWitness.armed = true
 		defer { ZeroizingBuffer.ScrubWitness.armed = false }
 
-		var writer = SecretArchive.Writer(reservingCapacity: 16)
-		writer.writeBytes([UInt8](repeating: 0x5A, count: 4096))  // forces reallocation
-		_ = writer.finalize()
+		struct Holder: Codable { @SecretField var secret: SecretBytes }
+		do {
+			let archive = try SecretArchive(
+				encoding: Holder(
+					secret: try SecretBytes(
+						bytes: [UInt8](repeating: 0x5A, count: 64))))
+			withExtendedLifetime(archive) {}
+		}  // released here -> deinit scrubs and records the witness
 
 		XCTAssertEqual(
 			ZeroizingBuffer.ScrubWitness.lastDeinitAllZero, true,
-			"a reallocated buffer was released without scrubbing"
-		)
+			"the archive allocation was released without scrubbing")
 	}
+
 }
