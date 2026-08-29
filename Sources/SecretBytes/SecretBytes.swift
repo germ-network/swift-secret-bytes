@@ -33,11 +33,32 @@ public struct SecretBytes: Sendable, Equatable, ContiguousBytes,
 	}
 
 	/// Copies `bytes` into fresh zeroizing storage.
-	public init(bytes: some ContiguousBytes) {
-		self.symmetricKey = SymmetricKey(data: bytes)
+	///
+	/// - Throws: `SecretBytesError.emptySecret` if `bytes` is empty. A zero-byte
+	///   secret is meaningless, and permitting one is not harmless:
+	///   `SymmetricKey`'s constant-time compare returns false for zero-length
+	///   input, so an empty secret would compare unequal to itself and break
+	///   `Equatable`'s reflexivity requirement.
+	///
+	///   This **throws** rather than trapping because `bytes` is caller data and
+	///   may be attacker-influenced — a decoder handing over a zero-length field
+	///   must surface an error, not abort the process. Contrast
+	///   `init(randomByteCount:)`, whose argument is a length the programmer
+	///   chose rather than data anyone supplied; a non-positive count there is a
+	///   programming error and traps, matching stdlib convention.
+	public init(bytes: some ContiguousBytes) throws {
+		let symmetricKey = SymmetricKey(data: bytes)
+		guard symmetricKey.withUnsafeBytes({ !$0.isEmpty }) else {
+			throw SecretBytesError.emptySecret
+		}
+		self.symmetricKey = symmetricKey
 	}
 
 	/// Generates `count` cryptographically random bytes in zeroizing storage.
+	///
+	/// - Precondition: `count > 0`. Unlike `init(bytes:)` this argument is a
+	///   length the caller chose, not data it received, so a non-positive value
+	///   is a programming error rather than faulty input.
 	public init(randomByteCount count: Int) {
 		precondition(count > 0, "SecretBytes must hold at least one byte")
 		self.symmetricKey = SymmetricKey(size: .init(bitCount: count * 8))
@@ -67,8 +88,44 @@ public struct SecretBytes: Sendable, Equatable, ContiguousBytes,
 	///   which mints an unscrubbed copy per call on hot paths — a regression
 	///   this type exists to prevent. `SymmetricKey` itself conforms for the
 	///   same reason (`SymmetricKeys.swift:77`).
+	///
+	/// - Note: swift-crypto's KDF entry points are not uniform, so the
+	///   conformance covers some but not all of them:
+	///   - `HKDF.expand(pseudoRandomKey:info:outputByteCount:)` constrains its
+	///     key to `ContiguousBytes`, so a `SecretBytes` passes **directly**.
+	///   - `HKDF.extract(inputKeyMaterial:salt:)` and
+	///     `HKDF.deriveKey(inputKeyMaterial:…)` take a concrete
+	///     `SymmetricKey`. Bridge with
+	///     `secret.withUnsafeBytes { SymmetricKey(data: $0) }` — that stays in
+	///     zeroizing storage the whole way (`SymmetricKey` copies into its own
+	///     `SecureBytes`), so it is ceremony, not a plaintext hop. Do **not**
+	///     reach for `Data($0)` to satisfy these.
+	///
+	/// - Important: The conformance has a cost adopters must actively manage.
+	///   `SecretBytes` inherits **every public `extension ContiguousBytes`
+	///   anywhere in the importing module's dependency graph** — including
+	///   ones this package cannot see. A convenience such as
+	///   `extension ContiguousBytes { public var dataRepresentation: Data }`
+	///   silently becomes a one-property plaintext exit on every secret. Audit
+	///   for such extensions when adopting, and shadow any that are reachable:
+	///   `extension SecretBytes { @available(*, unavailable, message: "…")
+	///   public var dataRepresentation: Data { fatalError() } }` turns the
+	///   exit into a compile error without touching the offending package.
 	public static func == (lhs: SecretBytes, rhs: SecretBytes) -> Bool {
-		lhs.symmetricKey == rhs.symmetricKey
+		// Defense in depth. Both initializers reject a zero-byte secret — one by
+		// throwing, one by precondition — so an empty `SecretBytes` should be
+		// unconstructible through public API. But if one ever exists,
+		// `SymmetricKey`'s constant-time compare returns false for zero-length
+		// input, which would make it unequal to *itself* and silently break
+		// `Equatable`'s reflexivity requirement. A silent failure is worth four
+		// lines of belt and braces. Length is already public via `byteCount`,
+		// so branching on it leaks nothing that was secret, and the
+		// constant-time path still covers every comparison where both operands
+		// actually hold bytes.
+		let leftCount = lhs.byteCount
+		let rightCount = rhs.byteCount
+		guard leftCount > 0, rightCount > 0 else { return leftCount == rightCount }
+		return lhs.symmetricKey == rhs.symmetricKey
 	}
 
 	public var description: String { "SecretBytes(\(byteCount) bytes)" }

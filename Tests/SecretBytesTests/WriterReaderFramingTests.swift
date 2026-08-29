@@ -10,10 +10,10 @@ final class WriterReaderFramingTests: XCTestCase {
 	/// Locks the wire format: plain integers are fixed-width big-endian and
 	/// unprefixed; secrets are varint-length-prefixed. This is what makes the
 	/// secret/non-secret split visible at the call site.
-	func testPlainIsUnprefixedSecretIsLengthPrefixed() {
+	func testPlainIsUnprefixedSecretIsLengthPrefixed() throws {
 		var writer = SecretArchive.Writer()
 		writer.write(UInt32(0x0102_0304))
-		writer.writeSecret(SecretBytes(bytes: [0xAA, 0xBB]))
+		writer.writeSecret(try SecretBytes(bytes: [0xAA, 0xBB]))
 		let archive = writer.finalize()
 		XCTAssertEqual(bytes(of: archive), [0x01, 0x02, 0x03, 0x04, 0x02, 0xAA, 0xBB])
 	}
@@ -77,14 +77,20 @@ final class WriterReaderFramingTests: XCTestCase {
 		}
 	}
 
-	func testEmptySecretRoundTrips() throws {
+	/// Zero-length *plain* byte fields remain legal and must round-trip — only
+	/// zero-length *secrets* are prohibited (`SecretBytes` enforces a non-empty
+	/// invariant at construction). The redesigned archive layer additionally
+	/// rejects a zero-length secret field on decode, so the prohibition holds
+	/// on the untrusted-input path without trapping.
+	func testEmptyPlainBytesRoundTrips() throws {
 		var writer = SecretArchive.Writer()
-		writer.writeSecret(SecretBytes(bytes: [] as [UInt8]))
+		writer.writeBytes([] as [UInt8])
 		writer.write(UInt8(0x42))
 		let archive = writer.finalize()
 		var reader = SecretArchive.Reader(archive)
-		let secret = try reader.readSecret()
-		XCTAssertEqual(secret.byteCount, 0)
+		XCTAssertEqual(try reader.readBytes(), [])
 		XCTAssertEqual(try reader.readUInt8(), 0x42)
+		XCTAssertTrue(reader.isAtEnd)
 	}
+
 }
