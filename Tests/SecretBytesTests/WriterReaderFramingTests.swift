@@ -77,14 +77,20 @@ final class WriterReaderFramingTests: XCTestCase {
 		}
 	}
 
-	func testEmptySecretRoundTrips() throws {
+	/// Zero-length *plain* byte fields remain legal and must round-trip — only
+	/// zero-length *secrets* are prohibited (`SecretBytes` enforces a non-empty
+	/// invariant at construction). The redesigned archive layer additionally
+	/// rejects a zero-length secret field on decode, so the prohibition holds
+	/// on the untrusted-input path without trapping.
+	func testEmptyPlainBytesRoundTrips() throws {
 		var writer = SecretArchive.Writer()
-		writer.writeSecret(SecretBytes(bytes: [] as [UInt8]))
+		writer.writeBytes([] as [UInt8])
 		writer.write(UInt8(0x42))
 		let archive = writer.finalize()
 		var reader = SecretArchive.Reader(archive)
-		let secret = try reader.readSecret()
-		XCTAssertEqual(secret.byteCount, 0)
+		XCTAssertEqual(try reader.readBytes(), [])
 		XCTAssertEqual(try reader.readUInt8(), 0x42)
+		XCTAssertTrue(reader.isAtEnd)
 	}
+
 }

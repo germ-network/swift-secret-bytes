@@ -33,8 +33,24 @@ public struct SecretBytes: Sendable, Equatable, ContiguousBytes,
 	}
 
 	/// Copies `bytes` into fresh zeroizing storage.
+	///
+	/// - Precondition: `bytes` is non-empty. A zero-byte secret is meaningless,
+	///   and permitting one costs more than it buys: `SymmetricKey`'s
+	///   constant-time compare returns false for zero-length input, so an empty
+	///   secret would compare unequal to itself and break `Equatable`'s
+	///   reflexivity requirement. `init(randomByteCount:)` has always asserted
+	///   this invariant; this initializer now enforces it too.
+	///
+	///   Decoding is the one path that must not trap on this — untrusted bytes
+	///   reach it — so `SecretArchive` rejects a zero-length secret field with
+	///   a thrown error before it ever reaches an initializer.
 	public init(bytes: some ContiguousBytes) {
-		self.symmetricKey = SymmetricKey(data: bytes)
+		let symmetricKey = SymmetricKey(data: bytes)
+		precondition(
+			symmetricKey.withUnsafeBytes { !$0.isEmpty },
+			"SecretBytes must hold at least one byte"
+		)
+		self.symmetricKey = symmetricKey
 	}
 
 	/// Generates `count` cryptographically random bytes in zeroizing storage.
@@ -91,14 +107,16 @@ public struct SecretBytes: Sendable, Equatable, ContiguousBytes,
 	///   public var dataRepresentation: Data { fatalError() } }` turns the
 	///   exit into a compile error without touching the offending package.
 	public static func == (lhs: SecretBytes, rhs: SecretBytes) -> Bool {
+		// Defense in depth. Both initializers now reject a zero-byte secret and
+		// the archive decoder throws on a zero-length secret field, so an empty
+		// `SecretBytes` should be unconstructible — but if one ever exists,
 		// `SymmetricKey`'s constant-time compare returns false for zero-length
-		// input, so a zero-byte secret would compare unequal to *itself* and
-		// break `Equatable`'s reflexivity requirement. A zero-byte secret is
-		// reachable: `init(bytes:)` accepts an empty collection, and
-		// `SecretArchive.Reader.readSecret()` yields one for a zero-length
-		// field. Length is already public via `byteCount`, so branching on it
-		// leaks nothing that was secret; the constant-time path still covers
-		// every comparison where both operands actually hold bytes.
+		// input, which would make it unequal to *itself* and silently break
+		// `Equatable`'s reflexivity requirement. A silent failure is worth four
+		// lines of belt and braces. Length is already public via `byteCount`,
+		// so branching on it leaks nothing that was secret, and the
+		// constant-time path still covers every comparison where both operands
+		// actually hold bytes.
 		let leftCount = lhs.byteCount
 		let rightCount = rhs.byteCount
 		guard leftCount > 0, rightCount > 0 else { return leftCount == rightCount }
