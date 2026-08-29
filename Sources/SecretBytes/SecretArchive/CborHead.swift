@@ -43,30 +43,38 @@ enum CborHead {
 		1 + argumentByteCount(for: value)
 	}
 
+	/// The shortest-form head bytes for `major`/`value`, not including any
+	/// following payload (text/byte content).
+	///
+	/// Shared by `write` and by the canonical map-key sort
+	/// (`ArchiveSerializer.encodedKey`), which needs the identical bytes as a
+	/// plain array to sort on. One implementation is what makes it impossible
+	/// for the two to independently drift apart — exactly the failure mode a
+	/// hand-rolled canonical encoder is prone to.
+	static func encodedHead(major: CborMajor, value: UInt64) -> [UInt8] {
+		let width = argumentByteCount(for: value)
+		let base = major.rawValue << 5
+		switch width {
+		case 0: return [base | UInt8(value)]
+		case 1: return [base | 24, UInt8(value)]
+		case 2:
+			return [base | 25]
+				+ withUnsafeBytes(of: UInt16(value).bigEndian, Array.init)
+		case 4:
+			return [base | 26]
+				+ withUnsafeBytes(of: UInt32(value).bigEndian, Array.init)
+		default: return [base | 27] + withUnsafeBytes(of: value.bigEndian, Array.init)
+		}
+	}
+
 	/// Appends the shortest-form head for `major`/`value` through `cursor`.
 	static func write(
 		major: CborMajor,
 		value: UInt64,
 		into cursor: inout ArchiveWriteCursor
 	) throws {
-		let width = argumentByteCount(for: value)
-		let base = major.rawValue << 5
-		switch width {
-		case 0:
-			try cursor.append(base | UInt8(value))
-		case 1:
-			try cursor.append(base | 24)
-			try cursor.append(UInt8(value))
-		case 2:
-			try cursor.append(base | 25)
-			try cursor.appendBigEndian(UInt16(value))
-		case 4:
-			try cursor.append(base | 26)
-			try cursor.appendBigEndian(UInt32(value))
-		default:
-			try cursor.append(base | 27)
-			try cursor.appendBigEndian(value)
-		}
+		let head = encodedHead(major: major, value: value)
+		try head.withUnsafeBytes { try cursor.append(contentsOf: $0) }
 	}
 
 	/// Parses one head at `offset`, advancing past it.
@@ -74,10 +82,17 @@ enum CborHead {
 	/// Throws `.malformedArchive` on a non-shortest encoding, additional info
 	/// 28–30 (reserved) or 31 (indefinite length), and `.truncated` if the
 	/// argument bytes run past the end.
+	///
+	/// `additionalInfo` is returned alongside `value` because for major 7
+	/// (simple/float) the argument is a representation-selecting bit pattern,
+	/// not a magnitude — callers that need to know *which form* arrived (an
+	/// inline simple value vs. a float16/float32/float64 argument) must not
+	/// reconstruct it from `value`, which is ambiguous by design once the
+	/// shortest-form rule below is skipped for that major.
 	static func parse(
 		_ buffer: UnsafeRawBufferPointer,
 		at offset: inout Int
-	) throws -> (major: CborMajor, value: UInt64) {
+	) throws -> (major: CborMajor, value: UInt64, additionalInfo: UInt8) {
 		guard offset < buffer.count else { throw SecretArchiveError.truncated }
 		let initial = buffer[offset]
 		offset += 1
@@ -87,7 +102,7 @@ enum CborHead {
 		let additional = initial & 0x1F
 
 		if additional < 24 {
-			return (major, UInt64(additional))
+			return (major, UInt64(additional), additional)
 		}
 		guard additional <= 27 else {
 			// 28–30 reserved; 31 is indefinite length, forbidden by the profile.
@@ -103,10 +118,17 @@ enum CborHead {
 		}
 		offset += width
 
-		// Shortest-form: this value must not have fit in a narrower argument.
-		guard argumentByteCount(for: value) == width else {
-			throw SecretArchiveError.malformedArchive
+		// Shortest-form applies to magnitudes — integers, and lengths for
+		// bytes/text/array/map. For major 7 the argument bytes select a
+		// representation (which float width, or a one-byte simple value);
+		// there is no shorter competing encoding of a given bit pattern, so
+		// the rule doesn't apply. Rejecting non-canonical simple/float wire
+		// forms is the caller's job, using `additionalInfo`.
+		if major != .simple {
+			guard argumentByteCount(for: value) == width else {
+				throw SecretArchiveError.malformedArchive
+			}
 		}
-		return (major, value)
+		return (major, value, additional)
 	}
 }

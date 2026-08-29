@@ -27,7 +27,7 @@ final class ArchiveNode {
 		case float(Double)  // always float64 on the wire; see the format notes
 		case array([ArchiveNode])
 		case map([(key: MapKey, value: ArchiveNode)])
-		case secret(any SecretRestorable)
+		case secret(any AnySecretField)
 		case embedded(SecretArchive)
 	}
 

@@ -46,34 +46,15 @@ enum ArchiveSerializer {
 	/// non-negatives and in **descending** numeric order. Sorting semantically
 	/// instead would produce different bytes.
 	private static func encodedKey(_ key: ArchiveNode.MapKey) -> [UInt8] {
-		var bytes: [UInt8] = []
-		let (major, value): (CborMajor, UInt64) =
-			switch key {
-			case .uint(let v): (.unsigned, v)
-			case .negative(let v): (.negative, v)
-			case .text(let s): (.text, UInt64(Array(s.utf8).count))
-			}
-		let width = CborHead.argumentByteCount(for: value)
-		let base = major.rawValue << 5
-		switch width {
-		case 0: bytes.append(base | UInt8(value))
-		case 1: bytes.append(contentsOf: [base | 24, UInt8(value)])
-		case 2:
-			bytes.append(base | 25)
-			bytes.append(
-				contentsOf: withUnsafeBytes(of: UInt16(value).bigEndian, Array.init)
-			)
-		case 4:
-			bytes.append(base | 26)
-			bytes.append(
-				contentsOf: withUnsafeBytes(of: UInt32(value).bigEndian, Array.init)
-			)
-		default:
-			bytes.append(base | 27)
-			bytes.append(contentsOf: withUnsafeBytes(of: value.bigEndian, Array.init))
+		switch key {
+		case .uint(let v):
+			return CborHead.encodedHead(major: .unsigned, value: v)
+		case .negative(let v):
+			return CborHead.encodedHead(major: .negative, value: v)
+		case .text(let s):
+			let utf8 = Array(s.utf8)
+			return CborHead.encodedHead(major: .text, value: UInt64(utf8.count)) + utf8
 		}
-		if case .text(let s) = key { bytes.append(contentsOf: Array(s.utf8)) }
-		return bytes
 	}
 
 	/// Sorts a map's entries into canonical order, rejecting duplicates.
@@ -90,8 +71,14 @@ enum ArchiveSerializer {
 			.sorted { lhs, rhs in
 				lhs.encoded.lexicographicallyPrecedes(rhs.encoded)
 			}
+		// A duplicate here means the same keyed container encoded one key
+		// twice — a caller bug (hand-written `Codable` conformance), not a
+		// wire-format defect. `.malformedArchive` documents parse-time
+		// canonicity failures on untrusted bytes; this is encode-side, so it
+		// gets the same "package/caller bug, not attacker-reachable" case the
+		// sizing/fill desync uses.
 		for i in 1..<max(sorted.count, 1) where sorted[i].encoded == sorted[i - 1].encoded {
-			throw SecretArchiveError.malformedArchive
+			throw SecretArchiveError.internalEncodingFailure
 		}
 		return sorted
 	}

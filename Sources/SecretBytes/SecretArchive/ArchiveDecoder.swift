@@ -111,16 +111,19 @@ final class ArchiveDecoder: Decoder {
 
 extension IndexNode {
 	func integer<T: FixedWidthInteger>(_ type: T.Type, at path: [any CodingKey]) throws -> T {
-		let value: Int64
 		switch kind {
 		case .uint(let v):
-			guard v <= UInt64(Int64.max) else {
+			// `T(exactly:)` never traps, unlike narrowing through `Int64` first —
+			// which made every `UInt64`/`UInt` value above `Int64.max` (a full
+			// hash fragment, a random nonce) unreadable even into a `UInt64`
+			// field that could hold it.
+			guard let narrowed = T(exactly: v) else {
 				throw DecodingError.dataCorrupted(
 					.init(
 						codingPath: path,
-						debugDescription: "integer overflows Int64"))
+						debugDescription: "integer does not fit \(type)"))
 			}
-			value = Int64(v)
+			return narrowed
 		case .negative(let v):
 			guard v <= UInt64(Int64.max) else {
 				throw DecodingError.dataCorrupted(
@@ -128,20 +131,19 @@ extension IndexNode {
 						codingPath: path,
 						debugDescription: "integer overflows Int64"))
 			}
-			value = -1 - Int64(v)
+			guard let narrowed = T(exactly: -1 - Int64(v)) else {
+				throw DecodingError.dataCorrupted(
+					.init(
+						codingPath: path,
+						debugDescription: "integer does not fit \(type)"))
+			}
+			return narrowed
 		default:
 			throw DecodingError.typeMismatch(
 				type,
 				.init(codingPath: path, debugDescription: "expected a CBOR integer")
 			)
 		}
-		guard let narrowed = T(exactly: value) else {
-			throw DecodingError.dataCorrupted(
-				.init(
-					codingPath: path,
-					debugDescription: "integer does not fit \(type)"))
-		}
-		return narrowed
 	}
 
 	func boolean(at path: [any CodingKey]) throws -> Bool {
@@ -189,12 +191,24 @@ private struct ArchiveKeyedDecodingContainer<Key: CodingKey>: KeyedDecodingConta
 	let entries: [(key: IndexNode.IndexKey, keyBytes: Range<Int>, value: IndexNode)]
 	var codingPath: [any CodingKey]
 
+	/// Mirrors `node(for:)`'s gating: integer wire keys only surface through a
+	/// key type that opted in, and only when they fit `Int` — an
+	/// attacker-controlled archive can carry an integer key of any width, and
+	/// `Int(v)`/`Int64(v)` on an out-of-range `UInt64` traps rather than
+	/// throwing.
 	var allKeys: [Key] {
-		entries.compactMap { entry in
+		let integerKeyed = Key.self is any ArchiveIntegerCodingKey.Type
+		return entries.compactMap { entry in
 			switch entry.key {
-			case .text(let s): Key(stringValue: s)
-			case .uint(let v): Key(intValue: Int(v))
-			case .negative(let v): Key(intValue: -1 - Int(v))
+			case .text(let s):
+				return Key(stringValue: s)
+			case .uint(let v):
+				guard integerKeyed, let i = Int(exactly: v) else { return nil }
+				return Key(intValue: i)
+			case .negative(let v):
+				guard integerKeyed, v <= UInt64(Int64.max) else { return nil }
+				guard let i = Int(exactly: -1 - Int64(v)) else { return nil }
+				return Key(intValue: i)
 			}
 		}
 	}
@@ -281,10 +295,10 @@ private struct ArchiveKeyedDecodingContainer<Key: CodingKey>: KeyedDecodingConta
 	}
 
 	func decode<T: Decodable>(_ type: T.Type, forKey key: Key) throws -> T {
+		let node = try require(key)
 		let child = ArchiveDecoder(
-			archive: decoder.archive, node: try require(key),
-			codingPath: codingPath + [key])
-		return try child.unwrap(type, from: try require(key))
+			archive: decoder.archive, node: node, codingPath: codingPath + [key])
+		return try child.unwrap(type, from: node)
 	}
 
 	func nestedContainer<NK: CodingKey>(
@@ -303,8 +317,36 @@ private struct ArchiveKeyedDecodingContainer<Key: CodingKey>: KeyedDecodingConta
 		).unkeyedContainer()
 	}
 
-	func superDecoder() throws -> any Decoder { decoder }
-	func superDecoder(forKey key: Key) throws -> any Decoder { decoder }
+	/// Mirrors the encoder's `"super"`-keyed convention.
+	func superDecoder() throws -> any Decoder {
+		for entry in entries {
+			if case .text("super") = entry.key {
+				return ArchiveDecoder(
+					archive: decoder.archive, node: entry.value,
+					codingPath: codingPath)
+			}
+		}
+		throw DecodingError.keyNotFound(
+			SuperCodingKey(),
+			.init(codingPath: codingPath, debugDescription: "no super key"))
+	}
+
+	func superDecoder(forKey key: Key) throws -> any Decoder {
+		ArchiveDecoder(
+			archive: decoder.archive, node: try require(key),
+			codingPath: codingPath + [key])
+	}
+}
+
+/// Stand-in `CodingKey` for the conventional `"super"` map entry — mirrors the
+/// private key type `JSONEncoder` uses for the same purpose, since the
+/// schema's own `Key` type has no reason to declare a `"super"` case.
+private struct SuperCodingKey: CodingKey {
+	var stringValue: String { "super" }
+	init() {}
+	init?(stringValue: String) { nil }
+	var intValue: Int? { nil }
+	init?(intValue: Int) { nil }
 }
 
 private struct ArchiveUnkeyedDecodingContainer: UnkeyedDecodingContainer {
@@ -403,7 +445,12 @@ private struct ArchiveUnkeyedDecodingContainer: UnkeyedDecodingContainer {
 		.unkeyedContainer()
 	}
 
-	mutating func superDecoder() throws -> any Decoder { decoder }
+	/// Mirrors `ArchiveUnkeyedContainer.superEncoder()`: consumes the next
+	/// array element as the super object.
+	mutating func superDecoder() throws -> any Decoder {
+		let node = try next()
+		return ArchiveDecoder(archive: decoder.archive, node: node, codingPath: codingPath)
+	}
 }
 
 private struct ArchiveSingleValueDecodingContainer: SingleValueDecodingContainer {

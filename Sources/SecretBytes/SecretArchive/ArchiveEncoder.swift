@@ -11,11 +11,15 @@ final class ArchiveEncoder: Encoder {
 	var codingPath: [any CodingKey]
 	var userInfo: [CodingUserInfoKey: Any] { [:] }
 
-	/// Filled in by whichever container this encoder hands out.
+	/// Filled in by whichever container this encoder hands out. `superEncoder`
+	/// pre-sets this to a node it already inserted into the parent tree, so
+	/// the container methods below populate that same reference in place
+	/// rather than allocating a disconnected one.
 	var node: ArchiveNode?
 
-	init(codingPath: [any CodingKey] = []) {
+	init(codingPath: [any CodingKey] = [], node: ArchiveNode? = nil) {
 		self.codingPath = codingPath
+		self.node = node
 	}
 
 	// MARK: The funnel
@@ -25,7 +29,7 @@ final class ArchiveEncoder: Encoder {
 	/// carrier's throwing conformance is never reached inside this coder.
 	func wrap(_ value: some Encodable, at path: [any CodingKey]) throws -> ArchiveNode {
 		if let secret = value as? AnySecretField {
-			return ArchiveNode(.secret(SecretBox(secret)))
+			return ArchiveNode(.secret(secret))
 		}
 		if let embedded = value as? SecretArchive.Embedded {
 			return ArchiveNode(.embedded(embedded.archive))
@@ -41,7 +45,8 @@ final class ArchiveEncoder: Encoder {
 	// MARK: Encoder
 
 	func container<Key: CodingKey>(keyedBy type: Key.Type) -> KeyedEncodingContainer<Key> {
-		let box = ArchiveNode(.map([]))
+		let box = node ?? ArchiveNode(.null)
+		box.kind = .map([])
 		node = box
 		return KeyedEncodingContainer(
 			ArchiveKeyedContainer<Key>(encoder: self, node: box, codingPath: codingPath)
@@ -49,29 +54,14 @@ final class ArchiveEncoder: Encoder {
 	}
 
 	func unkeyedContainer() -> any UnkeyedEncodingContainer {
-		let box = ArchiveNode(.array([]))
+		let box = node ?? ArchiveNode(.null)
+		box.kind = .array([])
 		node = box
 		return ArchiveUnkeyedContainer(encoder: self, node: box, codingPath: codingPath)
 	}
 
 	func singleValueContainer() -> any SingleValueEncodingContainer {
 		ArchiveSingleValueContainer(encoder: self, codingPath: codingPath)
-	}
-}
-
-/// Wraps the existential so it can live in the node's `any SecretRestorable`
-/// slot while still exposing the scoped accessor the serializer needs.
-struct SecretBox: SecretRestorable {
-	private let field: any AnySecretField
-
-	init(_ field: any AnySecretField) { self.field = field }
-
-	init(restoringSecretBytes bytes: UnsafeRawBufferPointer) throws {
-		throw SecretArchiveError.internalEncodingFailure  // encode-side only
-	}
-
-	func withSecretBytes<R>(_ body: (UnsafeRawBufferPointer) throws -> R) rethrows -> R {
-		try field.withSecretBytes(body)
 	}
 }
 
@@ -139,8 +129,24 @@ private struct ArchiveKeyedContainer<Key: CodingKey>: KeyedEncodingContainerProt
 			encoder: encoder, node: child, codingPath: codingPath + [key])
 	}
 
-	mutating func superEncoder() -> any Encoder { encoder }
-	mutating func superEncoder(forKey key: Key) -> any Encoder { encoder }
+	/// Inserts a fresh node under the conventional `"super"` text key (matching
+	/// `JSONEncoder`'s convention) and hands back an encoder pre-bound to that
+	/// same node, so whatever `super.encode(to:)` writes lands there rather
+	/// than replacing this container's own map.
+	mutating func superEncoder() -> any Encoder {
+		let child = ArchiveNode(.null)
+		if case .map(var entries) = node.kind {
+			entries.append((key: .text("super"), value: child))
+			node.kind = .map(entries)
+		}
+		return ArchiveEncoder(codingPath: codingPath, node: child)
+	}
+
+	mutating func superEncoder(forKey key: Key) -> any Encoder {
+		let child = ArchiveNode(.null)
+		put(child, key)
+		return ArchiveEncoder(codingPath: codingPath + [key], node: child)
+	}
 }
 
 private struct ArchiveUnkeyedContainer: UnkeyedEncodingContainer {
@@ -196,30 +202,47 @@ private struct ArchiveUnkeyedContainer: UnkeyedEncodingContainer {
 			encoder: encoder, node: child, codingPath: codingPath)
 	}
 
-	mutating func superEncoder() -> any Encoder { encoder }
+	mutating func superEncoder() -> any Encoder {
+		let child = ArchiveNode(.null)
+		append(child)
+		return ArchiveEncoder(codingPath: codingPath, node: child)
+	}
 }
 
 private struct ArchiveSingleValueContainer: SingleValueEncodingContainer {
 	let encoder: ArchiveEncoder
 	var codingPath: [any CodingKey]
 
-	mutating func encodeNil() throws { encoder.node = ArchiveNode(.null) }
-	mutating func encode(_ v: Bool) throws { encoder.node = ArchiveNode(.bool(v)) }
-	mutating func encode(_ v: String) throws { encoder.node = ArchiveNode(.text(v)) }
-	mutating func encode(_ v: Double) throws { encoder.node = ArchiveNode(.float(v)) }
-	mutating func encode(_ v: Float) throws { encoder.node = ArchiveNode(.float(Double(v))) }
-	mutating func encode(_ v: Int) throws { encoder.node = .integer(Int64(v)) }
-	mutating func encode(_ v: Int8) throws { encoder.node = .integer(Int64(v)) }
-	mutating func encode(_ v: Int16) throws { encoder.node = .integer(Int64(v)) }
-	mutating func encode(_ v: Int32) throws { encoder.node = .integer(Int64(v)) }
-	mutating func encode(_ v: Int64) throws { encoder.node = .integer(v) }
-	mutating func encode(_ v: UInt) throws { encoder.node = .integer(UInt64(v)) }
-	mutating func encode(_ v: UInt8) throws { encoder.node = .integer(UInt64(v)) }
-	mutating func encode(_ v: UInt16) throws { encoder.node = .integer(UInt64(v)) }
-	mutating func encode(_ v: UInt32) throws { encoder.node = .integer(UInt64(v)) }
-	mutating func encode(_ v: UInt64) throws { encoder.node = .integer(v) }
+	/// Writes into `encoder.node` in place when `superEncoder` preset it to a
+	/// node it already inserted into the parent tree — reassigning `node`
+	/// outright there would orphan that reference: the parent keeps pointing
+	/// at the old (empty) object while this write lands somewhere it never
+	/// sees.
+	private func set(_ kind: ArchiveNode.Kind) {
+		if let existing = encoder.node {
+			existing.kind = kind
+		} else {
+			encoder.node = ArchiveNode(kind)
+		}
+	}
+
+	mutating func encodeNil() throws { set(.null) }
+	mutating func encode(_ v: Bool) throws { set(.bool(v)) }
+	mutating func encode(_ v: String) throws { set(.text(v)) }
+	mutating func encode(_ v: Double) throws { set(.float(v)) }
+	mutating func encode(_ v: Float) throws { set(.float(Double(v))) }
+	mutating func encode(_ v: Int) throws { set(ArchiveNode.integer(Int64(v)).kind) }
+	mutating func encode(_ v: Int8) throws { set(ArchiveNode.integer(Int64(v)).kind) }
+	mutating func encode(_ v: Int16) throws { set(ArchiveNode.integer(Int64(v)).kind) }
+	mutating func encode(_ v: Int32) throws { set(ArchiveNode.integer(Int64(v)).kind) }
+	mutating func encode(_ v: Int64) throws { set(ArchiveNode.integer(v).kind) }
+	mutating func encode(_ v: UInt) throws { set(ArchiveNode.integer(UInt64(v)).kind) }
+	mutating func encode(_ v: UInt8) throws { set(ArchiveNode.integer(UInt64(v)).kind) }
+	mutating func encode(_ v: UInt16) throws { set(ArchiveNode.integer(UInt64(v)).kind) }
+	mutating func encode(_ v: UInt32) throws { set(ArchiveNode.integer(UInt64(v)).kind) }
+	mutating func encode(_ v: UInt64) throws { set(ArchiveNode.integer(v).kind) }
 
 	mutating func encode<T: Encodable>(_ value: T) throws {
-		encoder.node = try encoder.wrap(value, at: codingPath)
+		set(try encoder.wrap(value, at: codingPath).kind)
 	}
 }

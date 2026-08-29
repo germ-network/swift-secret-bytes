@@ -27,7 +27,13 @@ public struct SecretArchive: @unchecked Sendable {
 	/// plaintext staging buffer for bulk producers. `initializer` receives a
 	/// buffer of exactly `capacity` bytes and sets `initializedCount` to the
 	/// number it wrote (which must not exceed `capacity`).
-	public init(
+	///
+	/// Internal: `capacity` is a length the *caller* chooses and traps if
+	/// violated, which is only safe for producers inside this package (the
+	/// serializer, the seal-open path) that compute their own capacity. There
+	/// is no `Reader` left to hand an external caller attacker-shaped bytes
+	/// through this entry point.
+	init(
 		unsafeUninitializedCapacity capacity: Int,
 		initializingWith initializer: (
 			_ buffer: UnsafeMutableRawBufferPointer,

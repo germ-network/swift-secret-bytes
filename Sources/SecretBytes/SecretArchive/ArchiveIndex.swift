@@ -50,7 +50,7 @@ enum ArchiveIndex {
 		depth: Int
 	) throws -> IndexNode {
 		guard depth <= maxDepth else { throw SecretArchiveError.malformedArchive }
-		let (major, value) = try CborHead.parse(buffer, at: &offset)
+		let (major, value, additionalInfo) = try CborHead.parse(buffer, at: &offset)
 
 		switch major {
 		case .unsigned:
@@ -128,15 +128,19 @@ enum ArchiveIndex {
 			throw SecretArchiveError.malformedArchive
 
 		case .simple:
-			switch value {
+			// Dispatch on `additionalInfo`, not `value`: bool/null are only
+			// canonical in the inline (additional < 24) form. Switching on
+			// `value` here would also accept the non-canonical one-byte-argument
+			// encoding of 20/21/22 (e.g. `0xF8 0x14`), since CborHead no longer
+			// enforces shortest-form for major 7.
+			switch additionalInfo {
 			case 20: return IndexNode(.bool(false))
 			case 21: return IndexNode(.bool(true))
 			case 22: return IndexNode(.null)
 			default:
-				// Reached for float heads and for disallowed simple values;
-				// CborHead has already consumed the argument bytes, so rewind
-				// and decode the float form explicitly.
-				return try parseFloat(buffer, at: &offset, headValue: value)
+				return try parseFloat(
+					buffer, at: &offset, headValue: value,
+					additionalInfo: additionalInfo)
 			}
 		}
 	}
@@ -147,7 +151,7 @@ enum ArchiveIndex {
 		_ buffer: UnsafeRawBufferPointer,
 		at offset: inout Int
 	) throws -> IndexNode.IndexKey {
-		let (major, value) = try CborHead.parse(buffer, at: &offset)
+		let (major, value, _) = try CborHead.parse(buffer, at: &offset)
 		switch major {
 		case .unsigned:
 			return .uint(value)
@@ -179,13 +183,10 @@ enum ArchiveIndex {
 	private static func parseFloat(
 		_ buffer: UnsafeRawBufferPointer,
 		at offset: inout Int,
-		headValue: UInt64
+		headValue: UInt64,
+		additionalInfo: UInt8
 	) throws -> IndexNode {
-		// CborHead consumed the head byte plus its argument. Recover which form
-		// it was from the argument width implied by the value it produced.
-		let headByte = buffer[offset - CborHead.encodedSize(for: headValue)]
-		let additional = headByte & 0x1F
-		switch additional {
+		switch additionalInfo {
 		case 25:
 			// float16 — allowed only as the canonical NaN.
 			guard UInt16(truncatingIfNeeded: headValue) == 0x7E00 else {
@@ -193,13 +194,13 @@ enum ArchiveIndex {
 			}
 			return IndexNode(.float(.nan))
 		case 27:
-			let bits = headValue
-			let d = Double(bitPattern: bits)
+			let d = Double(bitPattern: headValue)
 			// NaN must use the canonical short form, never float64.
 			guard !d.isNaN else { throw SecretArchiveError.malformedArchive }
 			return IndexNode(.float(d))
 		default:
-			// float32 (26), undefined (23), and every other simple value.
+			// float32 (26), one-byte simple value (24, incl. non-canonical
+			// bool/null), undefined (23), and every other simple value.
 			throw SecretArchiveError.malformedArchive
 		}
 	}

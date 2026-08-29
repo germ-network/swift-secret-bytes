@@ -79,4 +79,36 @@ final class ArchiveVectorTests: XCTestCase {
 		XCTAssertEqual(
 			hex(try SecretArchive(encoding: F(v: 1.5))), "a16176fb3ff8000000000000")
 	}
+
+	/// Declared out of wire order on purpose: "z" > "a" bytewise, but the
+	/// struct declares `z` first. Every other vector in this file happens to
+	/// declare its properties already in canonical order, so none of them
+	/// would notice a broken sort — only a round-trip test would, and a
+	/// self-consistently-wrong sort still round-trips.
+	func testCanonicalOrderReordersOutOfOrderTextKeys() throws {
+		struct S: Codable {
+			var z = 1
+			var a = 2
+		}
+		//  a2  6161 02  617a 01   {"a": 2, "z": 1}
+		XCTAssertEqual(
+			hex(try SecretArchive(encoding: S())), "a2" + "6161" + "02" + "617a" + "01")
+	}
+
+	/// Same regression for integer wire keys: declared 5, -1, 2 but the
+	/// canonical byte order is 2 (`02`) < 5 (`05`) < -1 (`20`).
+	func testCanonicalOrderReordersOutOfOrderIntegerKeys() throws {
+		struct S: Codable {
+			var five = "a", negOne = "b", two = "c"
+			enum CodingKeys: Int, CodingKey, ArchiveIntegerCodingKey {
+				case five = 5
+				case negOne = -1
+				case two = 2
+			}
+		}
+		//  a3  02 6163  05 6161  20 6162   {2:"c", 5:"a", -1:"b"}
+		XCTAssertEqual(
+			hex(try SecretArchive(encoding: S())),
+			"a3" + "02" + "6163" + "05" + "6161" + "20" + "6162")
+	}
 }
