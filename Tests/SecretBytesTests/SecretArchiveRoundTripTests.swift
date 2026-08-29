@@ -3,21 +3,21 @@ import XCTest
 @testable import SecretBytes
 
 final class SecretArchiveRoundTripTests: XCTestCase {
-	private func sampleEpoch(labelLength: Int) -> Epoch {
+	private func sampleEpoch(labelLength: Int) throws -> Epoch {
 		Epoch(
 			index: 0x0102_0304_0506_0708,
 			flags: 0xBEEF,
-			key: SecretBytes(bytes: [UInt8](repeating: 0x5A, count: 32)),
+			key: try SecretBytes(bytes: [UInt8](repeating: 0x5A, count: 32)),
 			label: (0..<labelLength).map { UInt8($0 & 0xFF) },
 			inner: Epoch.Inner(
 				counter: 0xCAFE_BABE,
-				secret: SecretBytes(bytes: [UInt8](repeating: 0xA5, count: 16))
+				secret: try SecretBytes(bytes: [UInt8](repeating: 0xA5, count: 16))
 			)
 		)
 	}
 
 	func testArchiveRestoreRoundTrip() throws {
-		let epoch = sampleEpoch(labelLength: 5)
+		let epoch = try sampleEpoch(labelLength: 5)
 		let archive = SecretArchive(archiving: epoch)
 		let restored = try archive.restore(Epoch.self)
 		XCTAssertEqual(restored, epoch)
@@ -26,7 +26,7 @@ final class SecretArchiveRoundTripTests: XCTestCase {
 	func testRoundTripSurvivesBufferGrowth() throws {
 		// A label large enough to force several capacity doublings past the
 		// 64-byte initial reservation, proving append/realloc preserves bytes.
-		let epoch = sampleEpoch(labelLength: 4096)
+		let epoch = try sampleEpoch(labelLength: 4096)
 		let archive = SecretArchive(archiving: epoch)
 		let restored = try archive.restore(Epoch.self)
 		XCTAssertEqual(restored, epoch)
@@ -36,11 +36,12 @@ final class SecretArchiveRoundTripTests: XCTestCase {
 		var writer = SecretArchive.Writer()
 		writer.write(UInt64(1))
 		writer.write(UInt16(2))
-		writer.writeSecret(SecretBytes(bytes: [1, 2, 3]))
+		writer.writeSecret(try SecretBytes(bytes: [1, 2, 3]))
 		writer.writeBytes([9, 9])
 		writer.embed(
 			SecretArchive(
-				archiving: Epoch.Inner(counter: 1, secret: SecretBytes(bytes: [0])))
+				archiving: Epoch.Inner(
+					counter: 1, secret: try SecretBytes(bytes: [0])))
 		)
 		writer.write(UInt8(0xFF))  // one byte too many for Epoch's schema
 		let archive = writer.finalize()
@@ -62,7 +63,7 @@ final class SecretArchiveRoundTripTests: XCTestCase {
 	func testSecretReadReconstructsExactLength() throws {
 		var writer = SecretArchive.Writer()
 		writer.write(UInt32(0x0102_0304))
-		writer.writeSecret(SecretBytes(bytes: [0xAA, 0xBB, 0xCC]))
+		writer.writeSecret(try SecretBytes(bytes: [0xAA, 0xBB, 0xCC]))
 		writer.write(UInt8(0x7F))
 		let archive = writer.finalize()
 		var reader = SecretArchive.Reader(archive)

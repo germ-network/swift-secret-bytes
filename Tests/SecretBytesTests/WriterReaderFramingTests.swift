@@ -10,10 +10,10 @@ final class WriterReaderFramingTests: XCTestCase {
 	/// Locks the wire format: plain integers are fixed-width big-endian and
 	/// unprefixed; secrets are varint-length-prefixed. This is what makes the
 	/// secret/non-secret split visible at the call site.
-	func testPlainIsUnprefixedSecretIsLengthPrefixed() {
+	func testPlainIsUnprefixedSecretIsLengthPrefixed() throws {
 		var writer = SecretArchive.Writer()
 		writer.write(UInt32(0x0102_0304))
-		writer.writeSecret(SecretBytes(bytes: [0xAA, 0xBB]))
+		writer.writeSecret(try SecretBytes(bytes: [0xAA, 0xBB]))
 		let archive = writer.finalize()
 		XCTAssertEqual(bytes(of: archive), [0x01, 0x02, 0x03, 0x04, 0x02, 0xAA, 0xBB])
 	}

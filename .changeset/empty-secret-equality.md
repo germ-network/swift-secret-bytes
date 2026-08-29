@@ -1,22 +1,25 @@
 ---
-"@germ-network/swift-secret-bytes": patch
+"@germ-network/swift-secret-bytes": minor
 ---
 
-Prohibit zero-byte secrets. `init(randomByteCount:)` has always asserted that a
-`SecretBytes` holds at least one byte; `init(bytes:)` now enforces the same
-invariant. A zero-byte secret is meaningless, and permitting one was not
-harmless: `SymmetricKey`'s constant-time compare returns false for zero-length
-input, so an empty secret compared unequal to itself, violating `Equatable`'s
-reflexivity requirement.
+Reject zero-byte secrets. `init(bytes:)` is now **throwing** and rejects an
+empty collection with `SecretBytesError.emptySecret`; `init(randomByteCount:)`
+keeps its long-standing precondition. The asymmetry is deliberate: `bytes` is
+caller data that may be attacker-influenced, so a decoder handing over a
+zero-length field must surface an error rather than abort the process, whereas
+a non-positive `count` is a length the programmer chose and so a programming
+error.
 
-Equality retains a zero-length guard as defense in depth — the state should now
-be unconstructible, but the failure it prevents is silent. Decoding is the one
-path that must not trap on untrusted bytes, so the archive layer rejects a
-zero-length secret field with a thrown error rather than reaching an
-initializer.
+A zero-byte secret was not harmless: `SymmetricKey`'s constant-time compare
+returns false for zero-length input, so an empty secret compared unequal to
+itself, violating `Equatable`'s reflexivity requirement. Equality retains a
+zero-length guard as defense in depth — the state should now be unconstructible
+through public API, but the failure it prevents is silent.
 
 Also documents two `ContiguousBytes` interop points: which swift-crypto KDF
 entry points accept a `SecretBytes` directly (`HKDF.expand`) versus which need a
 `SymmetricKey` bridge (`HKDF.extract`, `HKDF.deriveKey`), and the hazard that
 the conformance inherits every public `extension ContiguousBytes` in the
 importing graph — including ones that can expose plaintext.
+
+**Breaking:** `SecretBytes(bytes:)` now requires `try`.

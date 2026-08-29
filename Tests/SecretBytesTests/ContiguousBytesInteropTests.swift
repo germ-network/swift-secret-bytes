@@ -18,9 +18,9 @@ final class ContiguousBytesInteropTests: XCTestCase {
 		requireContiguousBytes(SecretBytes.self)
 	}
 
-	func testFeedsSymmetricKeyDirectly() {
+	func testFeedsSymmetricKeyDirectly() throws {
 		let raw = [UInt8](repeating: 0x5A, count: 32)
-		let secret = SecretBytes(bytes: raw)
+		let secret = try SecretBytes(bytes: raw)
 
 		// No `Data($0)` hop — the secret is the ContiguousBytes argument.
 		let key = SymmetricKey(data: secret)
@@ -28,8 +28,8 @@ final class ContiguousBytesInteropTests: XCTestCase {
 		XCTAssertEqual(key.withUnsafeBytes { [UInt8]($0) }, raw)
 	}
 
-	func testFeedsHKDFDirectly() {
-		let secret = SecretBytes(bytes: [UInt8](repeating: 0xA5, count: 32))
+	func testFeedsHKDFDirectly() throws {
+		let secret = try SecretBytes(bytes: [UInt8](repeating: 0xA5, count: 32))
 
 		let derived = HKDF<SHA256>.expand(
 			pseudoRandomKey: secret,
@@ -40,12 +40,14 @@ final class ContiguousBytesInteropTests: XCTestCase {
 		// Derivation is deterministic in the secret, so the same secret yields
 		// the same output — and a different secret does not.
 		let again = HKDF<SHA256>.expand(
-			pseudoRandomKey: SecretBytes(bytes: [UInt8](repeating: 0xA5, count: 32)),
+			pseudoRandomKey: try SecretBytes(
+				bytes: [UInt8](repeating: 0xA5, count: 32)),
 			info: Data("germ-secret-bytes-test".utf8),
 			outputByteCount: 32
 		)
 		let other = HKDF<SHA256>.expand(
-			pseudoRandomKey: SecretBytes(bytes: [UInt8](repeating: 0x5A, count: 32)),
+			pseudoRandomKey: try SecretBytes(
+				bytes: [UInt8](repeating: 0x5A, count: 32)),
 			info: Data("germ-secret-bytes-test".utf8),
 			outputByteCount: 32
 		)
@@ -56,9 +58,9 @@ final class ContiguousBytesInteropTests: XCTestCase {
 
 	/// The conformance must not have widened byte access: `withUnsafeBytes`
 	/// remains the only way through, and it still yields exactly the secret.
-	func testConformanceExposesOnlyTheExistingHatch() {
+	func testConformanceExposesOnlyTheExistingHatch() throws {
 		let raw: [UInt8] = [1, 2, 3, 4, 5]
-		let secret = SecretBytes(bytes: raw)
+		let secret = try SecretBytes(bytes: raw)
 
 		func readViaProtocol<T: ContiguousBytes>(_ value: T) -> [UInt8] {
 			value.withUnsafeBytes { [UInt8]($0) }

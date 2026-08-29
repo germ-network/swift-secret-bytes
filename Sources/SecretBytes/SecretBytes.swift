@@ -34,26 +34,31 @@ public struct SecretBytes: Sendable, Equatable, ContiguousBytes,
 
 	/// Copies `bytes` into fresh zeroizing storage.
 	///
-	/// - Precondition: `bytes` is non-empty. A zero-byte secret is meaningless,
-	///   and permitting one costs more than it buys: `SymmetricKey`'s
-	///   constant-time compare returns false for zero-length input, so an empty
-	///   secret would compare unequal to itself and break `Equatable`'s
-	///   reflexivity requirement. `init(randomByteCount:)` has always asserted
-	///   this invariant; this initializer now enforces it too.
+	/// - Throws: `SecretBytesError.emptySecret` if `bytes` is empty. A zero-byte
+	///   secret is meaningless, and permitting one is not harmless:
+	///   `SymmetricKey`'s constant-time compare returns false for zero-length
+	///   input, so an empty secret would compare unequal to itself and break
+	///   `Equatable`'s reflexivity requirement.
 	///
-	///   Decoding is the one path that must not trap on this — untrusted bytes
-	///   reach it — so `SecretArchive` rejects a zero-length secret field with
-	///   a thrown error before it ever reaches an initializer.
-	public init(bytes: some ContiguousBytes) {
+	///   This **throws** rather than trapping because `bytes` is caller data and
+	///   may be attacker-influenced — a decoder handing over a zero-length field
+	///   must surface an error, not abort the process. Contrast
+	///   `init(randomByteCount:)`, whose argument is a length the programmer
+	///   chose rather than data anyone supplied; a non-positive count there is a
+	///   programming error and traps, matching stdlib convention.
+	public init(bytes: some ContiguousBytes) throws {
 		let symmetricKey = SymmetricKey(data: bytes)
-		precondition(
-			symmetricKey.withUnsafeBytes { !$0.isEmpty },
-			"SecretBytes must hold at least one byte"
-		)
+		guard symmetricKey.withUnsafeBytes({ !$0.isEmpty }) else {
+			throw SecretBytesError.emptySecret
+		}
 		self.symmetricKey = symmetricKey
 	}
 
 	/// Generates `count` cryptographically random bytes in zeroizing storage.
+	///
+	/// - Precondition: `count > 0`. Unlike `init(bytes:)` this argument is a
+	///   length the caller chose, not data it received, so a non-positive value
+	///   is a programming error rather than faulty input.
 	public init(randomByteCount count: Int) {
 		precondition(count > 0, "SecretBytes must hold at least one byte")
 		self.symmetricKey = SymmetricKey(size: .init(bitCount: count * 8))
@@ -107,9 +112,9 @@ public struct SecretBytes: Sendable, Equatable, ContiguousBytes,
 	///   public var dataRepresentation: Data { fatalError() } }` turns the
 	///   exit into a compile error without touching the offending package.
 	public static func == (lhs: SecretBytes, rhs: SecretBytes) -> Bool {
-		// Defense in depth. Both initializers now reject a zero-byte secret and
-		// the archive decoder throws on a zero-length secret field, so an empty
-		// `SecretBytes` should be unconstructible — but if one ever exists,
+		// Defense in depth. Both initializers reject a zero-byte secret — one by
+		// throwing, one by precondition — so an empty `SecretBytes` should be
+		// unconstructible through public API. But if one ever exists,
 		// `SymmetricKey`'s constant-time compare returns false for zero-length
 		// input, which would make it unequal to *itself* and silently break
 		// `Equatable`'s reflexivity requirement. A silent failure is worth four
