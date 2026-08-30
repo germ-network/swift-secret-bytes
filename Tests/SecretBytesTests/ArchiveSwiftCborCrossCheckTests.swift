@@ -23,6 +23,14 @@ import XCTest
 /// never by extracting this package's own secret plaintext (`withSecretBytes`)
 /// for a value comparison, which would be the exact custody violation the
 /// package exists to prevent.
+///
+/// The honest qualifier: `rawData(_:)` copies a whole archive out of
+/// zeroizing storage into an ordinary `Data`, secret bytes included, because
+/// swift-cbor's entry points take `Data` and no narrower seam exists. That is
+/// a **test-only transient over test constants** — never a pattern for
+/// adopters, and the reason this file's secret fixture is `0xAB`-filled
+/// rather than a real key. It is a compromise, not an invariant this file
+/// upholds.
 final class ArchiveSwiftCborCrossCheckTests: XCTestCase {
 	private func hex(_ archive: SecretArchive) -> String {
 		archive.withUnsafeBytes { $0.map { String(format: "%02x", $0) }.joined() }
@@ -37,9 +45,11 @@ final class ArchiveSwiftCborCrossCheckTests: XCTestCase {
 	/// **Not** `CborEncoder.Options.deterministicCbor` — that preset composes
 	/// `.lexicographicallySortedMapKeys` with `.shortestFloatingPointEncoding`
 	/// (RFC 8949 §4.2.1's core determinism, width-minimal like every other
-	/// numeric field). This archive follows the stricter application profile
-	/// in §4.2.2 instead: float64 for every value, no float16/float32 shortcut
-	/// for values that would fit. `.floatingPoint64Only` is swift-cbor's
+	/// numeric field). This archive follows the *different* application
+	/// profile in §4.2.2 instead — Rule 3, float64 for every value, no
+	/// float16/float32 shortcut for values that would fit. Not a stricter
+	/// profile: §4.2.1 says plainly that Rule 3 does not use preferred
+	/// serialization. `.floatingPoint64Only` is swift-cbor's
 	/// equivalent of that choice. `testBuiltinDeterministicPresetDivergesOnFloats`
 	/// below pins the difference with real bytes so this substitution doesn't
 	/// silently rot back to the wrong preset.
@@ -84,12 +94,65 @@ final class ArchiveSwiftCborCrossCheckTests: XCTestCase {
 		nested: [Inner(n: 1, tags: ["a", "b"]), Inner(n: 2, tags: [])],
 		meta: ["y": 2, "x": 1])
 
+	/// Every strictness rule this archive claims, expressed as swift-cbor's
+	/// own decoder options. `.stringMapKeysOnly` is deliberately absent —
+	/// integer map keys are the point of `ArchiveIntegerCodingKey` — and
+	/// `.shortestFloatingPointEncoding` is replaced by `.floatingPoint64Only`
+	/// for the profile reason given on `reencodeOptions`.
+	///
+	/// This is the half of the oracle that matters most. Decoding with the
+	/// *default* options only shows an external implementation can read our
+	/// bytes; decoding with these shows it judges them *canonical*. Without
+	/// it nothing outside this package ever asserted that our heads are
+	/// minimally encoded or our map keys correctly sorted.
+	private let strictOptions: CborDecoder.Options = [
+		.minimalArgumentEncoding, .definiteLengthItems,
+		.lexicographicallySortedMapKeys, .floatingPoint64Only,
+		.basicSimpleValuesOnly, .validUTF8Only, .singleTopLevelItem,
+	]
+
 	/// swift-cbor, decoding our wire bytes into the same Swift type we
 	/// encoded, reconstructs the exact original value.
 	func testFixtureDecodesToSameValueWithSwiftCbor() throws {
 		let ours = try SecretArchive(encoding: fixture)
 		let decoded = try CborDecoder().decode(Fixture.self, from: rawData(ours))
 		XCTAssertEqual(decoded, fixture)
+	}
+
+	/// An external *validator*, not merely an external reader: swift-cbor
+	/// checks our output against RFC 8949 §4.2.1's canonicity rules and
+	/// accepts it. Shortest-form heads and canonical map ordering are the two
+	/// places a deterministic encoder goes silently wrong, and this is the
+	/// only assertion in the package that either is judged correct by
+	/// something other than this package.
+	func testFixturePassesSwiftCborStrictValidation() throws {
+		let ours = try SecretArchive(encoding: fixture)
+		let decoded = try CborDecoder(options: strictOptions)
+			.decode(Fixture.self, from: rawData(ours))
+		XCTAssertEqual(decoded, fixture)
+	}
+
+	/// The strict validator applied across argument widths, which the
+	/// `Fixture` alone does not reach: it holds only inline-argument and
+	/// 8-byte values, so a regression in the 1-, 2- or 4-byte head forms
+	/// would slip past `testFixtureReencodesByteIdenticalWithSwiftCbor`.
+	func testEveryArgumentWidthPassesStrictValidation() throws {
+		struct Widths: Codable, Equatable {
+			var inlineMax: Int  // 23  — no argument byte
+			var oneByte: Int  // 24  — 1-byte argument
+			var twoByte: Int  // 256 — 2-byte
+			var fourByte: Int  // 65536 — 4-byte
+			var eightByte: UInt64  // 2^32 — 8-byte
+			var blob: Data  // a 256-byte string: 2-byte length head
+		}
+		let value = Widths(
+			inlineMax: 23, oneByte: 24, twoByte: 256, fourByte: 65536,
+			eightByte: 4_294_967_296,
+			blob: Data(repeating: 0x5A, count: 256))
+		let ours = try SecretArchive(encoding: value)
+		let decoded = try CborDecoder(options: strictOptions)
+			.decode(Widths.self, from: rawData(ours))
+		XCTAssertEqual(decoded, value)
 	}
 
 	/// The strongest form of the check: swift-cbor, told to sort map keys

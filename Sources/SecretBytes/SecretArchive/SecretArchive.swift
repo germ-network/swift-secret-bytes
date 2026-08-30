@@ -73,6 +73,10 @@ extension SecretArchive {
 	public init(encoding value: some Encodable) throws {
 		let encoder = ArchiveEncoder()
 		let root = try encoder.wrap(value, at: [])
+		// Violations the Encoder protocol's non-throwing methods could only
+		// record, not raise — a container-shape conflict, most of all. Checked
+		// before sizing so a malformed tree never reaches the wire.
+		if let failure = encoder.failure.error { throw failure }
 		let capacity = try ArchiveSerializer.size(root)
 
 		try self.init(unsafeUninitializedCapacity: capacity) { buffer, count in

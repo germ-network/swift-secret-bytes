@@ -8,6 +8,24 @@ import Foundation
 /// (`wrap`), which is where secret carriers are intercepted by identity before
 /// their own `encode(to:)` could run.
 final class ArchiveEncoder: Encoder {
+	/// Records a container-shape violation detected where the `Encoder` and
+	/// container protocols forbid throwing. Shared by reference across the
+	/// whole encode tree — including encoders handed out by `superEncoder` —
+	/// so a violation anywhere reaches `SecretArchive.init(encoding:)`, which
+	/// throws before a single byte is serialized.
+	///
+	/// The alternative Foundation picks here is `preconditionFailure`. This
+	/// package throws instead: an aborting process is a worse answer than an
+	/// error, and "never trap" is applied uniformly rather than case by case.
+	final class Failure {
+		var error: SecretArchiveError?
+
+		func record(_ error: SecretArchiveError) {
+			// First violation wins; later ones are usually its fallout.
+			if self.error == nil { self.error = error }
+		}
+	}
+
 	var codingPath: [any CodingKey]
 	var userInfo: [CodingUserInfoKey: Any] { [:] }
 
@@ -17,9 +35,44 @@ final class ArchiveEncoder: Encoder {
 	/// rather than allocating a disconnected one.
 	var node: ArchiveNode?
 
-	init(codingPath: [any CodingKey] = [], node: ArchiveNode? = nil) {
+	let failure: Failure
+
+	init(
+		codingPath: [any CodingKey] = [],
+		node: ArchiveNode? = nil,
+		failure: Failure = Failure()
+	) {
 		self.codingPath = codingPath
 		self.node = node
+		self.failure = failure
+	}
+
+	/// Returns the node this encoder's container writes into, adopting `kind`
+	/// if the node is still unshaped.
+	///
+	/// A second container of a *different* kind on one encoder is a caller
+	/// bug — `{ keyed; unkeyed; keyed }` in one `encode(to:)`. It used to
+	/// overwrite the node's kind, after which the earlier container's writes
+	/// hit a `guard case … else { return }` and vanished: encoding succeeded
+	/// and silently produced a document missing whole fields. Recorded as a
+	/// failure now, and the detached node keeps the rest of the encode from
+	/// compounding the damage before it surfaces.
+	///
+	/// Re-requesting the *same* kind returns the same node, which is what
+	/// `Codable` expects: two `container(keyedBy:)` calls write into one map.
+	fileprivate func box(shapedAs kind: ArchiveNode.Kind) -> ArchiveNode {
+		let box = node ?? ArchiveNode(.null)
+		node = box
+		switch (box.kind, kind) {
+		case (.map, .map), (.array, .array):
+			return box
+		case (.null, _):
+			box.kind = kind
+			return box
+		default:
+			failure.record(.internalEncodingFailure)
+			return ArchiveNode(kind)
+		}
 	}
 
 	// MARK: The funnel
@@ -37,7 +90,7 @@ final class ArchiveEncoder: Encoder {
 		if let data = value as? Data {
 			return ArchiveNode(.bytes(data))
 		}
-		let child = ArchiveEncoder(codingPath: path)
+		let child = ArchiveEncoder(codingPath: path, failure: failure)
 		try value.encode(to: child)
 		return child.node ?? ArchiveNode(.null)
 	}
@@ -45,19 +98,16 @@ final class ArchiveEncoder: Encoder {
 	// MARK: Encoder
 
 	func container<Key: CodingKey>(keyedBy type: Key.Type) -> KeyedEncodingContainer<Key> {
-		let box = node ?? ArchiveNode(.null)
-		box.kind = .map([])
-		node = box
-		return KeyedEncodingContainer(
-			ArchiveKeyedContainer<Key>(encoder: self, node: box, codingPath: codingPath)
+		KeyedEncodingContainer(
+			ArchiveKeyedContainer<Key>(
+				encoder: self, node: box(shapedAs: .map([])), codingPath: codingPath
+			)
 		)
 	}
 
 	func unkeyedContainer() -> any UnkeyedEncodingContainer {
-		let box = node ?? ArchiveNode(.null)
-		box.kind = .array([])
-		node = box
-		return ArchiveUnkeyedContainer(encoder: self, node: box, codingPath: codingPath)
+		ArchiveUnkeyedContainer(
+			encoder: self, node: box(shapedAs: .array([])), codingPath: codingPath)
 	}
 
 	func singleValueContainer() -> any SingleValueEncodingContainer {
@@ -80,8 +130,18 @@ private struct ArchiveKeyedContainer<Key: CodingKey>: KeyedEncodingContainerProt
 		return .text(key.stringValue)
 	}
 
+	/// `node.kind = .null` before mutating is load-bearing, not tidying: the
+	/// `case .map(var entries)` binding and the node's own payload otherwise
+	/// both reference the array, so `append` sees a non-unique buffer and
+	/// copy-on-write duplicates the whole thing — per element, making an
+	/// N-element container O(N²) to encode. Dropping the node's reference
+	/// first leaves `entries` uniquely referenced and the append in place.
 	private func put(_ value: ArchiveNode, _ key: Key) {
-		guard case .map(var entries) = node.kind else { return }
+		guard case .map(var entries) = node.kind else {
+			encoder.failure.record(.internalEncodingFailure)
+			return
+		}
+		node.kind = .null
 		entries.append((key: mapKey(key), value: value))
 		node.kind = .map(entries)
 	}
@@ -139,13 +199,14 @@ private struct ArchiveKeyedContainer<Key: CodingKey>: KeyedEncodingContainerProt
 			entries.append((key: .text("super"), value: child))
 			node.kind = .map(entries)
 		}
-		return ArchiveEncoder(codingPath: codingPath, node: child)
+		return ArchiveEncoder(codingPath: codingPath, node: child, failure: encoder.failure)
 	}
 
 	mutating func superEncoder(forKey key: Key) -> any Encoder {
 		let child = ArchiveNode(.null)
 		put(child, key)
-		return ArchiveEncoder(codingPath: codingPath + [key], node: child)
+		return ArchiveEncoder(
+			codingPath: codingPath + [key], node: child, failure: encoder.failure)
 	}
 }
 
@@ -159,8 +220,14 @@ private struct ArchiveUnkeyedContainer: UnkeyedEncodingContainer {
 		return 0
 	}
 
+	/// Same uniqueness discipline as `ArchiveKeyedContainer.put` — see there
+	/// for why the `.null` assignment is what keeps this out of O(N²).
 	private func append(_ value: ArchiveNode) {
-		guard case .array(var items) = node.kind else { return }
+		guard case .array(var items) = node.kind else {
+			encoder.failure.record(.internalEncodingFailure)
+			return
+		}
+		node.kind = .null
 		items.append(value)
 		node.kind = .array(items)
 	}
@@ -205,7 +272,7 @@ private struct ArchiveUnkeyedContainer: UnkeyedEncodingContainer {
 	mutating func superEncoder() -> any Encoder {
 		let child = ArchiveNode(.null)
 		append(child)
-		return ArchiveEncoder(codingPath: codingPath, node: child)
+		return ArchiveEncoder(codingPath: codingPath, node: child, failure: encoder.failure)
 	}
 }
 
@@ -219,11 +286,21 @@ private struct ArchiveSingleValueContainer: SingleValueEncodingContainer {
 	/// at the old (empty) object while this write lands somewhere it never
 	/// sees.
 	private func set(_ kind: ArchiveNode.Kind) {
-		if let existing = encoder.node {
-			existing.kind = kind
-		} else {
+		guard let existing = encoder.node else {
 			encoder.node = ArchiveNode(kind)
+			return
 		}
+		// The third route into the container-shape conflict `box(shapedAs:)`
+		// guards, and the one that does not pass through it: a single value
+		// written onto an encoder that already handed out a map or array
+		// would overwrite the whole container, silently. `.null` is the one
+		// kind that may be replaced — that is `superEncoder`'s preset, and
+		// filling it is exactly what this container is for.
+		guard case .null = existing.kind else {
+			encoder.failure.record(.internalEncodingFailure)
+			return
+		}
+		existing.kind = kind
 	}
 
 	mutating func encodeNil() throws { set(.null) }

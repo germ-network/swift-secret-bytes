@@ -213,24 +213,33 @@ private struct ArchiveKeyedDecodingContainer<Key: CodingKey>: KeyedDecodingConta
 		}
 	}
 
-	/// Integer wire keys are addressable only by a key type that opted in;
-	/// text keys always match on `stringValue`.
+	/// Mirrors `ArchiveKeyedContainer.mapKey` exactly: a key is addressed by
+	/// integer **only** when the schema opted in *and* this key has an
+	/// `intValue`; otherwise by text. One key, one wire form.
+	///
+	/// The mirroring is the point. Matching text unconditionally — as this
+	/// once did — let an integer-keyed schema also answer to the case name
+	/// Swift synthesises for it, so `{"kty": 9}` decoded as though it were
+	/// `{1: 9}` even though the encoder emits only the latter. That is two
+	/// wire forms for one value and a shadowing channel into a COSE_Key,
+	/// which is precisely the shape integer keying exists to serve.
 	private func node(for key: Key) -> IndexNode? {
+		if Key.self is any ArchiveIntegerCodingKey.Type, let i = key.intValue {
+			for entry in entries {
+				switch entry.key {
+				case .uint(let v) where i >= 0 && UInt64(i) == v:
+					return entry.value
+				case .negative(let v) where i < 0 && UInt64(-1 - Int64(i)) == v:
+					return entry.value
+				default:
+					continue
+				}
+			}
+			return nil
+		}
 		for entry in entries {
-			switch entry.key {
-			case .text(let s) where s == key.stringValue:
+			if case .text(let s) = entry.key, s == key.stringValue {
 				return entry.value
-			case .uint(let v)
-			where Key.self is any ArchiveIntegerCodingKey.Type
-				&& key.intValue.map({ $0 >= 0 && UInt64($0) == v }) == true:
-				return entry.value
-			case .negative(let v)
-			where Key.self is any ArchiveIntegerCodingKey.Type
-				&& key.intValue.map({ $0 < 0 && UInt64(-1 - Int64($0)) == v })
-					== true:
-				return entry.value
-			default:
-				continue
 			}
 		}
 		return nil

@@ -103,6 +103,14 @@ enum ArchiveIndex {
 				[(key: IndexNode.IndexKey, keyBytes: Range<Int>, value: IndexNode)] =
 					[]
 			var previousKeyBytes: Range<Int>?
+			// Bytewise uniqueness (above) does not imply uniqueness as Swift
+			// sees it: `String ==` is *canonical equivalence*, so "é" as
+			// U+00E9 and as U+0065 U+0301 are byte-distinct, sort correctly,
+			// and are still the same `String`. Left unchecked, a map holding
+			// both decoded into a `[String: V]` of one entry — two keys in,
+			// one out, no error. Insertion into a `Set<String>` catches it in
+			// O(n) precisely because that hashing is canonical too.
+			var seenTextKeys: Set<String> = []
 			for _ in 0..<value {
 				let keyStart = offset
 				let key = try parseMapKey(buffer, at: &offset)
@@ -117,6 +125,12 @@ enum ArchiveIndex {
 					}
 				}
 				previousKeyBytes = keyBytes
+
+				if case .text(let text) = key {
+					guard seenTextKeys.insert(text).inserted else {
+						throw SecretArchiveError.malformedArchive
+					}
+				}
 
 				let value = try parse(buffer, at: &offset, depth: depth + 1)
 				entries.append((key: key, keyBytes: keyBytes, value: value))
