@@ -61,15 +61,19 @@ final class ArchiveEncoder: Encoder {
 	/// Re-requesting the *same* kind returns the same node, which is what
 	/// `Codable` expects: two `container(keyedBy:)` calls write into one map.
 	fileprivate func box(shapedAs kind: ArchiveNode.Kind) -> ArchiveNode {
-		let box = node ?? ArchiveNode(.null)
+		let box = node ?? ArchiveNode(.unset)
 		node = box
 		switch (box.kind, kind) {
 		case (.map, .map), (.array, .array):
 			return box
-		case (.null, _):
+		case (.unset, _):
 			box.kind = kind
 			return box
 		default:
+			// Reached by a genuine conflict *and* by `.null` — an explicitly
+			// encoded nil is a written value, not an empty slot, so asking for
+			// a container after one is the same caller bug as asking for two
+			// container kinds.
 			failure.record(.internalEncodingFailure)
 			return ArchiveNode(kind)
 		}
@@ -194,7 +198,7 @@ private struct ArchiveKeyedContainer<Key: CodingKey>: KeyedEncodingContainerProt
 	/// same node, so whatever `super.encode(to:)` writes lands there rather
 	/// than replacing this container's own map.
 	mutating func superEncoder() -> any Encoder {
-		let child = ArchiveNode(.null)
+		let child = ArchiveNode(.unset)
 		if case .map(var entries) = node.kind {
 			entries.append((key: .text("super"), value: child))
 			node.kind = .map(entries)
@@ -203,7 +207,7 @@ private struct ArchiveKeyedContainer<Key: CodingKey>: KeyedEncodingContainerProt
 	}
 
 	mutating func superEncoder(forKey key: Key) -> any Encoder {
-		let child = ArchiveNode(.null)
+		let child = ArchiveNode(.unset)
 		put(child, key)
 		return ArchiveEncoder(
 			codingPath: codingPath + [key], node: child, failure: encoder.failure)
@@ -270,7 +274,7 @@ private struct ArchiveUnkeyedContainer: UnkeyedEncodingContainer {
 	}
 
 	mutating func superEncoder() -> any Encoder {
-		let child = ArchiveNode(.null)
+		let child = ArchiveNode(.unset)
 		append(child)
 		return ArchiveEncoder(codingPath: codingPath, node: child, failure: encoder.failure)
 	}
@@ -293,10 +297,12 @@ private struct ArchiveSingleValueContainer: SingleValueEncodingContainer {
 		// The third route into the container-shape conflict `box(shapedAs:)`
 		// guards, and the one that does not pass through it: a single value
 		// written onto an encoder that already handed out a map or array
-		// would overwrite the whole container, silently. `.null` is the one
-		// kind that may be replaced — that is `superEncoder`'s preset, and
-		// filling it is exactly what this container is for.
-		guard case .null = existing.kind else {
+		// would overwrite the whole container, silently. `.unset` is the one
+		// kind that may be filled — that is `superEncoder`'s placeholder, and
+		// filling it is exactly what this container is for. `.null` is *not*
+		// replaceable: it means a nil was already encoded here, and the
+		// second write would discard it.
+		guard case .unset = existing.kind else {
 			encoder.failure.record(.internalEncodingFailure)
 			return
 		}

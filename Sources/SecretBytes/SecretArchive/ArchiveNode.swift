@@ -18,6 +18,12 @@ import Foundation
 /// values sit in ordinary memory, which is correct: they are not secrets.
 final class ArchiveNode {
 	enum Kind {
+		/// A node handed out but not yet written to — `superEncoder`'s
+		/// placeholder. Distinct from `.null` on purpose: conflating the two
+		/// made an explicitly encoded nil look replaceable, so `encodeNil()`
+		/// followed by a container silently discarded the nil. Serializes as
+		/// null if a `superEncoder` is requested and never used.
+		case unset
 		case uint(UInt64)
 		case negative(UInt64)  // encodes -1 - n; stores n
 		case bytes(Data)

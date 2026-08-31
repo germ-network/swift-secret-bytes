@@ -155,6 +155,23 @@ extension IndexNode {
 		return b
 	}
 
+	/// Narrowing float64 to `Float` loses precision, which is expected and
+	/// matches `JSONDecoder`. Turning a *finite* stored value into infinity is
+	/// not narrowing, it is a different value — `1e300` silently arriving as
+	/// `+inf` is wrong output, and a strict format does not do that quietly.
+	/// A stored infinity or NaN still decodes as itself.
+	func float(at path: [any CodingKey]) throws -> Float {
+		let stored = try double(at: path)
+		let narrowed = Float(stored)
+		guard narrowed.isFinite || !stored.isFinite else {
+			throw DecodingError.dataCorrupted(
+				.init(
+					codingPath: path,
+					debugDescription: "\(stored) overflows Float"))
+		}
+		return narrowed
+	}
+
 	func double(at path: [any CodingKey]) throws -> Double {
 		guard case .float(let d) = kind else {
 			throw DecodingError.typeMismatch(
@@ -201,7 +218,14 @@ private struct ArchiveKeyedDecodingContainer<Key: CodingKey>: KeyedDecodingConta
 		return entries.compactMap { entry in
 			switch entry.key {
 			case .text(let s):
-				return Key(stringValue: s)
+				guard let key = Key(stringValue: s) else { return nil }
+				// Completes the mirror `node(for:)` establishes. An opted-in
+				// key whose `intValue` is non-nil is addressed by integer
+				// *only*, so surfacing it here for a text wire key would list
+				// a key `contains` denies — and an `allKeys`-driven decoder
+				// would then read a phantom entry.
+				if integerKeyed && key.intValue != nil { return nil }
+				return key
 			case .uint(let v):
 				guard integerKeyed, let i = Int(exactly: v) else { return nil }
 				return Key(intValue: i)
@@ -255,9 +279,13 @@ private struct ArchiveKeyedDecodingContainer<Key: CodingKey>: KeyedDecodingConta
 
 	func contains(_ key: Key) -> Bool { node(for: key) != nil }
 
+	/// Absence is `keyNotFound`, not `true`. Reporting a missing key as an
+	/// explicit null is what let a phantom key — one `allKeys` listed but
+	/// `contains` denied — read as a legitimately encoded nil. `JSONDecoder`
+	/// throws here too, and `decodeIfPresent` is unaffected because it
+	/// consults `contains` first.
 	func decodeNil(forKey key: Key) throws -> Bool {
-		guard let node = node(for: key) else { return true }
-		return node.isNull
+		try require(key).isNull
 	}
 
 	func decode(_ type: Bool.Type, forKey key: Key) throws -> Bool {
@@ -270,7 +298,7 @@ private struct ArchiveKeyedDecodingContainer<Key: CodingKey>: KeyedDecodingConta
 		try require(key).double(at: codingPath + [key])
 	}
 	func decode(_ type: Float.Type, forKey key: Key) throws -> Float {
-		Float(try require(key).double(at: codingPath + [key]))
+		try require(key).float(at: codingPath + [key])
 	}
 	func decode(_ type: Int.Type, forKey key: Key) throws -> Int {
 		try require(key).integer(Int.self, at: codingPath + [key])
@@ -398,7 +426,7 @@ private struct ArchiveUnkeyedDecodingContainer: UnkeyedDecodingContainer {
 		try next().double(at: codingPath)
 	}
 	mutating func decode(_ type: Float.Type) throws -> Float {
-		Float(try next().double(at: codingPath))
+		try next().float(at: codingPath)
 	}
 	mutating func decode(_ type: Int.Type) throws -> Int {
 		try next().integer(Int.self, at: codingPath)
@@ -473,7 +501,7 @@ private struct ArchiveSingleValueDecodingContainer: SingleValueDecodingContainer
 		try node.string(decoder.archive, at: codingPath)
 	}
 	func decode(_ type: Double.Type) throws -> Double { try node.double(at: codingPath) }
-	func decode(_ type: Float.Type) throws -> Float { Float(try node.double(at: codingPath)) }
+	func decode(_ type: Float.Type) throws -> Float { try node.float(at: codingPath) }
 	func decode(_ type: Int.Type) throws -> Int { try node.integer(Int.self, at: codingPath) }
 	func decode(_ type: Int8.Type) throws -> Int8 {
 		try node.integer(Int8.self, at: codingPath)

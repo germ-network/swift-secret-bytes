@@ -80,6 +80,21 @@ enum ArchiveSerializer {
 		for i in 1..<max(sorted.count, 1) where sorted[i].encoded == sorted[i - 1].encoded {
 			throw SecretArchiveError.internalEncodingFailure
 		}
+
+		// The decoder rejects text keys that are byte-distinct but *canonically
+		// equivalent* ("é" as U+00E9 vs U+0065 U+0301), because `String ==`
+		// would collapse them and lose an entry silently. The encoder must
+		// refuse to mint what the decoder refuses to read: a hand-written
+		// `CodingKey` can supply both spellings, and without this check the
+		// result sealed cleanly and could never be restored — the same
+		// emit/reject split that made float64 zero unreadable.
+		var seenTextKeys: Set<String> = []
+		for entry in entries {
+			guard case .text(let text) = entry.key else { continue }
+			guard seenTextKeys.insert(text).inserted else {
+				throw SecretArchiveError.internalEncodingFailure
+			}
+		}
 		return sorted
 	}
 
@@ -89,6 +104,12 @@ enum ArchiveSerializer {
 		case .uint(let v), .negative(let v):
 			return CborHead.encodedSize(for: v)
 		case .bool, .null:
+			return 1
+		case .unset:
+			// A `superEncoder` was requested and never written to. The slot
+			// exists in the parent, so it must encode as something; null is
+			// what the placeholder stood in for before `.unset` split the two
+			// meanings apart, and keeps that shape unchanged on the wire.
 			return 1
 		case .float(let d):
 			return d.isNaN ? 3 : 9  // canonical NaN is 0xf97e00; else float64
@@ -127,7 +148,8 @@ enum ArchiveSerializer {
 			try CborHead.write(major: .negative, value: v, into: &cursor)
 		case .bool(let b):
 			try cursor.append(b ? 0xF5 : 0xF4)
-		case .null:
+		case .null, .unset:
+			// `.unset` is an unwritten `superEncoder` slot — see `size`.
 			try cursor.append(0xF6)
 		case .float(let d):
 			if d.isNaN {
