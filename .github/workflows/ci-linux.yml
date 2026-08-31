@@ -32,3 +32,11 @@ jobs:
       - run: swift --version
       - name: Test
         run: swift test
+      # Release is the configuration that ships, and it is the one where the
+      # encoder's `#if DEBUG` self-validation is absent — so every guard has
+      # to stand on its own there. Until this step existed the suite could not
+      # even be compiled under `-c release`, so nothing checked that.
+      # `-enable-testing` is required because `@testable import` needs
+      # testability, which release builds do not enable by default.
+      - name: Test (release)
+        run: swift test -c release -Xswiftc -enable-testing

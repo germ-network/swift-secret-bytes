@@ -59,33 +59,52 @@ final class ZeroizingBuffer: ManagedBuffer<Int, UInt8> {
 	extension ZeroizingBuffer {
 		/// Test-only channel for observing the deinit scrub. `armed` gates the
 		/// observation so only the buffer under test records into it.
+		///
+		/// Deliberately **absent from release**, unlike the inert helpers
+		/// below, for two reasons pointing the same way: it costs a static read
+		/// in every buffer's `deinit`, and it is a channel for reading memory
+		/// that just held a secret. A release binary should not carry a way to
+		/// observe scrubbed bytes, however narrow. The tests that depend on it
+		/// are `#if DEBUG` for the same reason, and say so.
 		enum ScrubWitness {
 			nonisolated(unsafe) static var armed = false
 			nonisolated(unsafe) static var lastDeinitAllZero: Bool?
 		}
+	}
+#endif
 
-		/// Allocates a buffer with its whole capacity filled with `sentinel`.
-		static func filledForTesting(byteCount: Int, with sentinel: UInt8)
-			-> ZeroizingBuffer
-		{
-			let buffer = allocate(minimumCapacity: byteCount)
-			buffer.withUnsafeMutablePointerToElements { elements in
-				_ = UnsafeMutableRawBufferPointer(
-					start: elements, count: buffer.capacity
-				)
-				.initializeMemory(as: UInt8.self, repeating: sentinel)
-			}
-			buffer.count = byteCount
-			return buffer
+extension ZeroizingBuffer {
+	/// Inert test helpers: no runtime cost, and they observe nothing a release
+	/// binary holds, so they are built in every configuration.
+	///
+	/// That is what lets the suite *compile* under `-c release` — which is the
+	/// only way to exercise the paths that differ there. The encoder's
+	/// self-validation net is `#if DEBUG`, so release is precisely the
+	/// configuration where each guard must stand on its own, and it was
+	/// previously the one configuration the tests could not be run in at all.
+
+	/// Allocates a buffer with its whole capacity filled with `sentinel`.
+	static func filledForTesting(byteCount: Int, with sentinel: UInt8)
+		-> ZeroizingBuffer
+	{
+		let buffer = allocate(minimumCapacity: byteCount)
+		buffer.withUnsafeMutablePointerToElements { elements in
+			_ = UnsafeMutableRawBufferPointer(
+				start: elements, count: buffer.capacity
+			)
+			.initializeMemory(as: UInt8.self, repeating: sentinel)
 		}
+		buffer.count = byteCount
+		return buffer
+	}
 
-		/// True iff every byte of the allocation is zero.
-		func allZeroForTesting() -> Bool {
-			let capacity = self.capacity
-			return withUnsafeMutablePointerToElements { elements in
-				UnsafeRawBufferPointer(start: elements, count: capacity).allSatisfy
-				{ $0 == 0 }
+	/// True iff every byte of the allocation is zero.
+	func allZeroForTesting() -> Bool {
+		let capacity = self.capacity
+		return withUnsafeMutablePointerToElements { elements in
+			UnsafeRawBufferPointer(start: elements, count: capacity).allSatisfy {
+				$0 == 0
 			}
 		}
 	}
-#endif
+}
