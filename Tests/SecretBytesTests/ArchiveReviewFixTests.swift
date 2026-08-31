@@ -165,8 +165,22 @@ final class ArchiveReviewFixTests: XCTestCase {
 	/// payload referencing the same buffer, so every append copy-on-wrote the
 	/// whole array: 16k elements took ~500 ms and the curve was 4× time per
 	/// 2× length. This asserts the shape of the curve rather than a wall-clock
-	/// threshold, so it stays meaningful on slower or busier machines.
+	/// threshold, so it stays meaningful on slower machines.
+	///
+	/// **Not run on the simulator.** A shared CI runner measured 37× here
+	/// with the fix in place — worse than the ~16× a genuine quadratic
+	/// regression produces, so the reading was environmental, not algorithmic
+	/// (the same job took 13 minutes against 6 for its sibling leg). On real
+	/// hardware the curve is clean: 2× elements costs 2.02× time, flat from
+	/// 4k to 64k. A ratio test cannot survive a host that pauses the process
+	/// mid-measurement, and no threshold rescues it — loosening the bar past
+	/// 37× would stop detecting the defect. The property under test is a
+	/// property of the algorithm, not of the platform, so measuring it where
+	/// the clock is trustworthy loses nothing.
 	func testLargeArrayEncodingScalesLinearly() throws {
+		#if targetEnvironment(simulator)
+			throw XCTSkip("timing ratios are not measurable on a shared simulator host")
+		#endif
 		func encodeSeconds(count: Int) throws -> Double {
 			let value = [UInt8](repeating: 0x11, count: count)
 			let start = ProcessInfo.processInfo.systemUptime
