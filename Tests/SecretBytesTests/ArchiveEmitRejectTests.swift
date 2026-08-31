@@ -95,6 +95,76 @@ final class ArchiveEmitRejectTests: XCTestCase {
 		XCTAssertEqual(try SecretArchive(encoding: value).decode(Chain.self), value)
 	}
 
+	// MARK: The boundary itself — every node kind, both sides of the limit
+
+	/// `levels` nested containers, then a node of the given kind one deeper.
+	private struct DeepTail: Encodable {
+		enum Tail { case primitive, unusedSuper, emptyContainer }
+		let levels: Int
+		let tail: Tail
+
+		func encode(to encoder: Encoder) throws {
+			var root = encoder.unkeyedContainer()
+			var cur = root.nestedUnkeyedContainer()
+			for _ in 1..<levels { cur = cur.nestedUnkeyedContainer() }
+			switch tail {
+			case .primitive: try cur.encode(true)
+			case .unusedSuper: _ = cur.superEncoder()
+			case .emptyContainer: _ = cur.nestedUnkeyedContainer()
+			}
+		}
+	}
+
+	/// The depth checks used to live at each site that *created a container*,
+	/// which missed every other way a node comes into being: a primitive leaf,
+	/// an unused `superEncoder` slot, a single-value write. A container at the
+	/// limit is legal, so writing a primitive into it put a node one past the
+	/// limit — sealing cleanly, unreadable forever, and in DEBUG masked by the
+	/// self-validation into the wrong error entirely.
+	///
+	/// This sweeps *both sides* of the boundary for each node kind, which the
+	/// previous depth tests did not: their deepest case sat seven levels short
+	/// of it, so the region where an off-by-one lives was never visited.
+	func testEveryNodeKindRespectsTheDepthBoundary() throws {
+		for tail in [DeepTail.Tail.primitive, .unusedSuper, .emptyContainer] {
+			for levels in [62, 63] {
+				XCTAssertNoThrow(
+					try SecretArchive(
+						encoding: DeepTail(levels: levels, tail: tail)),
+					"\(tail) at \(levels) is within the limit and must encode")
+			}
+			for levels in [64, 65] {
+				XCTAssertThrowsError(
+					try SecretArchive(
+						encoding: DeepTail(levels: levels, tail: tail)),
+					"\(tail) at \(levels) exceeds the limit"
+				) { error in
+					// Must be the caller-data error, not the DEBUG net's
+					// generic one — the net is compiled out of release.
+					XCTAssertEqual(
+						error as? SecretArchiveError, .nestingTooDeep,
+						"\(tail) at \(levels) must report nestingTooDeep")
+				}
+			}
+		}
+	}
+
+	/// The check lives in the serializer's size walk, the one place every node
+	/// passes in every build configuration. Driving it directly proves the
+	/// bound holds where the DEBUG self-validation is absent — the archive-level
+	/// test above cannot distinguish the two in a debug build.
+	func testSerializerSizeWalkEnforcesDepthWithoutTheDebugNet() throws {
+		func nest(_ depth: Int) -> ArchiveNode {
+			var node = ArchiveNode(.bool(true))
+			for _ in 0..<depth { node = ArchiveNode(.array([node])) }
+			return node
+		}
+		XCTAssertNoThrow(try ArchiveSerializer.size(nest(64)))
+		XCTAssertThrowsError(try ArchiveSerializer.size(nest(65))) { error in
+			XCTAssertEqual(error as? SecretArchiveError, .nestingTooDeep)
+		}
+	}
+
 	// MARK: Float magnitude — precision may be lost, magnitude may not
 
 	private struct FloatField: Codable { var v: Float }

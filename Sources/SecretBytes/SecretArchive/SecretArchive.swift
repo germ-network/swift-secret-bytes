@@ -110,11 +110,16 @@ extension SecretArchive {
 			// the work of an encode; the invariant it guards is a property of
 			// the code, not of the input, so proving it in test builds proves
 			// it everywhere.
-			do {
-				_ = try withUnsafeBytes { try ArchiveIndex.build($0) }
-			} catch {
-				throw SecretArchiveError.internalEncodingFailure
-			}
+			// The validator's own error is preserved rather than flattened: it
+			// names *which* rule the encoder broke, and this net firing at all
+			// means someone is about to spend an afternoon finding out why.
+			//
+			// A net, not a proof. It sees only shapes a test actually drives,
+			// and it is absent from release — so every rule it might catch
+			// needs a release-active guard of its own. Where a check belongs
+			// is the one place every node passes (`ArchiveSerializer.size`),
+			// not at each site that happens to create one.
+			_ = try withUnsafeBytes { try ArchiveIndex.build($0) }
 		#endif
 	}
 }

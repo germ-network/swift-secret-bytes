@@ -206,7 +206,6 @@ private struct ArchiveKeyedContainer<Key: CodingKey>: KeyedEncodingContainerProt
 		keyedBy keyType: NK.Type, forKey key: Key
 	) -> KeyedEncodingContainer<NK> {
 		let child = ArchiveNode(.map([]))
-		if depth + 1 > ArchiveIndex.maxDepth { encoder.failure.record(.nestingTooDeep) }
 		put(child, key)
 		return KeyedEncodingContainer(
 			ArchiveKeyedContainer<NK>(
@@ -216,7 +215,6 @@ private struct ArchiveKeyedContainer<Key: CodingKey>: KeyedEncodingContainerProt
 
 	mutating func nestedUnkeyedContainer(forKey key: Key) -> any UnkeyedEncodingContainer {
 		let child = ArchiveNode(.array([]))
-		if depth + 1 > ArchiveIndex.maxDepth { encoder.failure.record(.nestingTooDeep) }
 		put(child, key)
 		return ArchiveUnkeyedContainer(
 			encoder: encoder, node: child, codingPath: codingPath + [key],
@@ -295,7 +293,6 @@ private struct ArchiveUnkeyedContainer: UnkeyedEncodingContainer {
 		keyedBy keyType: NK.Type
 	) -> KeyedEncodingContainer<NK> {
 		let child = ArchiveNode(.map([]))
-		if depth + 1 > ArchiveIndex.maxDepth { encoder.failure.record(.nestingTooDeep) }
 		append(child)
 		return KeyedEncodingContainer(
 			ArchiveKeyedContainer<NK>(
@@ -305,7 +302,6 @@ private struct ArchiveUnkeyedContainer: UnkeyedEncodingContainer {
 
 	mutating func nestedUnkeyedContainer() -> any UnkeyedEncodingContainer {
 		let child = ArchiveNode(.array([]))
-		if depth + 1 > ArchiveIndex.maxDepth { encoder.failure.record(.nestingTooDeep) }
 		append(child)
 		return ArchiveUnkeyedContainer(
 			encoder: encoder, node: child, codingPath: codingPath,

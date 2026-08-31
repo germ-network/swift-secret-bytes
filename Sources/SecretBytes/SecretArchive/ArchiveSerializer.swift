@@ -98,8 +98,26 @@ enum ArchiveSerializer {
 		return sorted
 	}
 
-	/// Exact encoded size of `node`.
-	static func size(_ node: ArchiveNode) throws -> Int {
+	/// Exact encoded size of `node`, and the authoritative depth check.
+	///
+	/// The decoder rejects *any node* past `ArchiveIndex.maxDepth`, leaves
+	/// included. The encoder used to check depth only where it created a
+	/// container — which missed primitives, `superEncoder` slots, and
+	/// single-value writes, so a leaf one level past a legal container sealed
+	/// cleanly and could never be read back. Guarding each creation site in
+	/// turn is how that seam stayed open across five review rounds: there is
+	/// always one more site.
+	///
+	/// This walk is the one place *every* node necessarily passes, in every
+	/// build configuration, before a byte is written. Checking here cannot
+	/// miss a path by construction, which is what makes the bound structural
+	/// rather than a list of guarded call sites. `wrap` keeps its own check
+	/// because that one bounds *recursion* — a deep enough value overflows the
+	/// stack while building the tree, before this walk ever runs.
+	static func size(_ node: ArchiveNode, depth: Int = 0) throws -> Int {
+		guard depth <= ArchiveIndex.maxDepth else {
+			throw SecretArchiveError.nestingTooDeep
+		}
 		switch node.kind {
 		case .uint(let v), .negative(let v):
 			return CborHead.encodedSize(for: v)
@@ -126,14 +144,14 @@ enum ArchiveSerializer {
 			return CborHead.encodedSize(for: UInt64(n)) + n
 		case .array(let items):
 			var total = CborHead.encodedSize(for: UInt64(items.count))
-			for item in items { total += try size(item) }
+			for item in items { total += try size(item, depth: depth + 1) }
 			return total
 		case .map(let entries):
 			let canonical = try canonicalEntries(entries)
 			var total = CborHead.encodedSize(for: UInt64(canonical.count))
 			for entry in canonical {
 				total += entry.encoded.count
-				total += try size(entry.value)
+				total += try size(entry.value, depth: depth + 1)
 			}
 			return total
 		}
