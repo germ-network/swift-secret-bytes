@@ -128,8 +128,8 @@ extension SecretArchive {
 	/// Copies a sub-range into its own zeroizing allocation — how an embedded
 	/// archive is lifted back out without the inner bytes ever leaving
 	/// zeroizing storage.
-	func copyingRange(_ range: Range<Int>) throws -> SecretArchive {
-		try SecretArchive(unsafeUninitializedCapacity: range.count) { buffer, count in
+	func copyingRange(_ range: Range<Int>) -> SecretArchive {
+		SecretArchive(unsafeUninitializedCapacity: range.count) { buffer, count in
 			if range.count > 0 {
 				withUnsafeBytes { source in
 					buffer.baseAddress!.copyMemory(

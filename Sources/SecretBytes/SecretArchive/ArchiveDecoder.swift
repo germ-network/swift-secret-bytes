@@ -52,7 +52,7 @@ final class ArchiveDecoder: Decoder {
 						codingPath: codingPath,
 						debugDescription: "expected a CBOR byte string"))
 			}
-			let inner = try archive.copyingRange(range)
+			let inner = archive.copyingRange(range)
 			return SecretArchive.Embedded(inner) as! T
 		}
 		if type == Data.self {
