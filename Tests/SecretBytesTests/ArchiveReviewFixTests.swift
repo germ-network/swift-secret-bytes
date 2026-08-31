@@ -371,6 +371,111 @@ final class ArchiveReviewFixTests: XCTestCase {
 		XCTAssertTrue(probe.nilThrew, "an absent key is keyNotFound, not an encoded nil")
 	}
 
+	// MARK: The older guards the newer ones quietly narrowed
+
+	private struct DuplicateIntegerKey: Encodable {
+		enum Keys: Int, CodingKey, ArchiveIntegerCodingKey { case only = 1 }
+		func encode(to encoder: Encoder) throws {
+			var c = encoder.container(keyedBy: Keys.self)
+			try c.encode(1, forKey: .only)
+			try c.encode(2, forKey: .only)
+		}
+	}
+
+	/// Adding the canonical-equivalence guard silently took over the older
+	/// byte-duplicate check's job *for text keys* — `String ==` implies byte
+	/// equality — leaving that check's only remaining responsibility, integer
+	/// keys, untested. Deleting it left the whole suite green while the
+	/// encoder emitted `a2 01 01 01 02` (`{1: 1, 1: 2}`), which the decoder
+	/// rejects: one mutation away from another emit/reject split, in the
+	/// COSE_Key case integer keying exists for.
+	func testDuplicateIntegerKeysRejectedAtEncode() throws {
+		XCTAssertThrowsError(try SecretArchive(encoding: DuplicateIntegerKey())) { error in
+			XCTAssertEqual(error as? SecretArchiveError, .internalEncodingFailure)
+		}
+	}
+
+	/// The guard tested directly, below the archive entry point.
+	///
+	/// `testDuplicateIntegerKeysRejectedAtEncode` goes through
+	/// `SecretArchive(encoding:)`, where the DEBUG self-validation also rejects
+	/// this — so deleting the serializer's own byte-duplicate check left that
+	/// test green. The self-validation is a net for tests, not a release
+	/// guarantee: it is compiled out of release builds, where only this guard
+	/// stands between a duplicate key and the wire. Driving the serializer
+	/// directly is what actually pins it.
+	func testSerializerItselfRejectsDuplicateIntegerKeys() throws {
+		let map = ArchiveNode(
+			.map([
+				(key: .uint(1), value: ArchiveNode(.uint(1))),
+				(key: .uint(1), value: ArchiveNode(.uint(2))),
+			]))
+		XCTAssertThrowsError(try ArchiveSerializer.size(map)) { error in
+			XCTAssertEqual(error as? SecretArchiveError, .internalEncodingFailure)
+		}
+	}
+
+	/// The decode-side mirror. `testDuplicateMapKeysRejected` uses *text* keys,
+	/// so after the new guard landed it no longer exercised `strictlyAscending`
+	/// at all — replacing that comparison's result wholesale kept the suite
+	/// green and made the decoder accept `a2 0101 0102`.
+	func testDuplicateIntegerKeysRejectedAtDecode() throws {
+		//  a2  01 01  01 02   {1: 1, 1: 2}
+		let bytes: [UInt8] = [0xA2, 0x01, 0x01, 0x01, 0x02]
+		XCTAssertThrowsError(try archive(bytes).decode([String: Int].self)) { error in
+			XCTAssertEqual(error as? SecretArchiveError, .malformedArchive)
+		}
+	}
+
+	/// Out-of-order integer keys, likewise — the ordering half of the same
+	/// comparison, also uncovered once text keys stopped reaching it.
+	func testUnsortedIntegerKeysRejectedAtDecode() throws {
+		//  a2  02 01  01 02   {2: 1, 1: 2} — descending, so not canonical
+		let bytes: [UInt8] = [0xA2, 0x02, 0x01, 0x01, 0x02]
+		XCTAssertThrowsError(try archive(bytes).decode([String: Int].self)) { error in
+			XCTAssertEqual(error as? SecretArchiveError, .malformedArchive)
+		}
+	}
+
+	// MARK: An unused superEncoder slot — the one new wire-visible behavior
+
+	private struct UnusedKeyedSuper: Encodable {
+		enum Keys: String, CodingKey { case a, sub }
+		func encode(to encoder: Encoder) throws {
+			var c = encoder.container(keyedBy: Keys.self)
+			try c.encode(1, forKey: .a)
+			_ = c.superEncoder(forKey: .sub)  // requested, never written to
+		}
+	}
+
+	private struct UnusedUnkeyedSuper: Encodable {
+		func encode(to encoder: Encoder) throws {
+			var c = encoder.unkeyedContainer()
+			try c.encode(1)
+			_ = c.superEncoder()  // requested, never written to
+			try c.encode(3)
+		}
+	}
+
+	/// `.unset` is the placeholder a `superEncoder` leaves behind, and if the
+	/// caller never writes to it, it reaches the serializer. Nothing pinned
+	/// what it emits there: making `size` and `emit` disagree about its width
+	/// (a genuine sizing/fill desync) and making it emit `false` instead of
+	/// null both left the suite green.
+	func testUnusedKeyedSuperEncoderSlotEmitsNull() throws {
+		//  a2  6161 01  63737562 f6   {"a": 1, "sub": null}
+		XCTAssertEqual(
+			hex(try SecretArchive(encoding: UnusedKeyedSuper())),
+			"a2" + "6161" + "01" + "63737562" + "f6")
+	}
+
+	func testUnusedUnkeyedSuperEncoderSlotEmitsNull() throws {
+		//  83  01  f6  03   [1, null, 3]
+		XCTAssertEqual(
+			hex(try SecretArchive(encoding: UnusedUnkeyedSuper())),
+			"83" + "01" + "f6" + "03")
+	}
+
 	// MARK: Container encoding is linear, not quadratic
 
 	/// `case .array(var items) = node.kind` used to leave the node's own
@@ -393,8 +498,33 @@ final class ArchiveReviewFixTests: XCTestCase {
 		#if targetEnvironment(simulator)
 			throw XCTSkip("timing ratios are not measurable on a shared simulator host")
 		#endif
+		try assertLinearScaling { count in
+			[UInt8](repeating: 0x11, count: count)
+		}
+	}
+
+	/// The identical hazard in `ArchiveKeyedContainer.put`, which was unpinned:
+	/// deleting *its* `node.kind = .null` left the whole suite green while a
+	/// `[String: Int]` degraded to a ~12× ratio for 4× the entries. Arrays and
+	/// maps are separate code paths, and a dictionary is the larger container
+	/// in practice.
+	func testLargeDictionaryEncodingScalesLinearly() throws {
+		#if targetEnvironment(simulator)
+			throw XCTSkip("timing ratios are not measurable on a shared simulator host")
+		#endif
+		try assertLinearScaling { count in
+			Dictionary(uniqueKeysWithValues: (0..<count).map { ("k\($0)", $0) })
+		}
+	}
+
+	/// Asserts the *shape* of the curve rather than a wall-clock threshold, so
+	/// it survives a slow machine: quadratic growth at 4× the elements is ~16×
+	/// the time, linear is ~4×, and the bar sits between them.
+	private func assertLinearScaling<T: Encodable>(
+		_ make: (Int) -> T, file: StaticString = #filePath, line: UInt = #line
+	) throws {
 		func encodeSeconds(count: Int) throws -> Double {
-			let value = [UInt8](repeating: 0x11, count: count)
+			let value = make(count)
 			let start = ProcessInfo.processInfo.systemUptime
 			_ = try SecretArchive(encoding: value)
 			return ProcessInfo.processInfo.systemUptime - start
@@ -402,13 +532,12 @@ final class ArchiveReviewFixTests: XCTestCase {
 		_ = try encodeSeconds(count: 2000)  // warm up
 		let small = try encodeSeconds(count: 8000)
 		let large = try encodeSeconds(count: 32000)
-
-		// Quadratic would be ~16×. Linear is ~4×. The bar is deliberately
-		// loose — this catches an O(n²) regression, not a 20% slowdown.
 		let floor = 0.0005  // ignore timer noise on very fast runs
 		XCTAssertLessThan(
 			large, max(small, floor) * 10,
 			"4× the elements took \(large / max(small, floor))× the time — "
-				+ "encoding looks quadratic again")
+				+ "encoding looks quadratic again",
+			file: file, line: line)
 	}
+
 }

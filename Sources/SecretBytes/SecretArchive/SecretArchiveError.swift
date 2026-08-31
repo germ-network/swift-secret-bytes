@@ -32,6 +32,13 @@ public enum SecretArchiveError: Error, Equatable, Sendable {
 	/// attacker-reachable condition — surfaced as a throw rather than a trap so
 	/// the "never trap" rule holds uniformly.
 	case internalEncodingFailure
+	/// The value nests deeper than the format's limit. Distinct from
+	/// `.internalEncodingFailure` because this one is about the *caller's
+	/// data*, not a package bug: a recursive `Codable` with a deep enough
+	/// value is the ordinary way to reach it, and the caller can act on it by
+	/// flattening. The encoder enforces the same bound the decoder does, so an
+	/// archive that encodes can always be read back.
+	case nestingTooDeep
 	/// The sealed blob was too short or otherwise not a valid AEAD container.
 	case malformedCiphertext
 	/// AEAD open failed: wrong key, wrong AAD, or the ciphertext was tampered.

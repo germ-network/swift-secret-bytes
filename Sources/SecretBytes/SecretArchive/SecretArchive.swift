@@ -72,7 +72,7 @@ extension SecretArchive {
 	/// type handed to any other encoder throws instead of writing.
 	public init(encoding value: some Encodable) throws {
 		let encoder = ArchiveEncoder()
-		let root = try encoder.wrap(value, at: [])
+		let root = try encoder.wrap(value, at: [], depth: 0)
 		// Violations the Encoder protocol's non-throwing methods could only
 		// record, not raise — a container-shape conflict, most of all. Checked
 		// before sizing so a malformed tree never reaches the wire.
@@ -90,6 +90,32 @@ extension SecretArchive {
 			}
 			count = cursor.written
 		}
+
+		#if DEBUG
+			// The encoder and the decoder hold *independent* definitions of a
+			// valid archive: the decoder's is written down and enumerated
+			// (`ArchiveIndex`), the encoder's is implicit in whatever the
+			// serializer happens to emit. Nothing structural forced them to
+			// agree, and three separate defects came from that one seam —
+			// float64 zero, canonically-equivalent text keys, and nesting past
+			// the depth limit. Each sealed cleanly and could never be read
+			// back, and each was found by a human reading one decoder rule and
+			// asking whether the encoder could violate it.
+			//
+			// This closes the class rather than enumerating it: every archive
+			// this package builds is offered to its own validator, so an
+			// encoder that emits something the decoder refuses fails *here*,
+			// in whatever test happened to construct it, instead of years
+			// later on someone's restore path. Debug-only because it doubles
+			// the work of an encode; the invariant it guards is a property of
+			// the code, not of the input, so proving it in test builds proves
+			// it everywhere.
+			do {
+				_ = try withUnsafeBytes { try ArchiveIndex.build($0) }
+			} catch {
+				throw SecretArchiveError.internalEncodingFailure
+			}
+		#endif
 	}
 }
 

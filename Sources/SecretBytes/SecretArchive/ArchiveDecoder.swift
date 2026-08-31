@@ -155,19 +155,26 @@ extension IndexNode {
 		return b
 	}
 
-	/// Narrowing float64 to `Float` loses precision, which is expected and
-	/// matches `JSONDecoder`. Turning a *finite* stored value into infinity is
-	/// not narrowing, it is a different value — `1e300` silently arriving as
-	/// `+inf` is wrong output, and a strict format does not do that quietly.
-	/// A stored infinity or NaN still decodes as itself.
+	/// Narrowing float64 to `Float` may lose *precision* — `0.1` arrives as the
+	/// nearest `Float`, which is expected and matches `JSONDecoder`. It must
+	/// not lose *magnitude*: `1e300` becoming `+inf` and `1e-300` becoming
+	/// `0.0` are both different values, not roundings, and a strict format does
+	/// not substitute one value for another in silence. `JSONDecoder` rejects
+	/// both ("Number 1e-300 is not representable in Swift"); so does this.
+	///
+	/// A stored infinity, NaN, or zero decodes as itself — the guards fire only
+	/// where a *finite non-zero* input lands on a non-finite or zero result.
 	func float(at path: [any CodingKey]) throws -> Float {
 		let stored = try double(at: path)
 		let narrowed = Float(stored)
-		guard narrowed.isFinite || !stored.isFinite else {
+		let overflowed = !narrowed.isFinite && stored.isFinite
+		let underflowed = narrowed == 0 && stored != 0
+		guard !overflowed && !underflowed else {
 			throw DecodingError.dataCorrupted(
 				.init(
 					codingPath: path,
-					debugDescription: "\(stored) overflows Float"))
+					debugDescription:
+						"\(stored) is not representable as Float"))
 		}
 		return narrowed
 	}

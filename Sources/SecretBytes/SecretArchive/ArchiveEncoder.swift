@@ -37,14 +37,21 @@ final class ArchiveEncoder: Encoder {
 
 	let failure: Failure
 
+	/// Nesting level of this encoder's own node, counted the way
+	/// `ArchiveIndex` counts it on the way back in: the root is 0, and every
+	/// container nested inside another is one deeper.
+	let depth: Int
+
 	init(
 		codingPath: [any CodingKey] = [],
 		node: ArchiveNode? = nil,
-		failure: Failure = Failure()
+		failure: Failure = Failure(),
+		depth: Int = 0
 	) {
 		self.codingPath = codingPath
 		self.node = node
 		self.failure = failure
+		self.depth = depth
 	}
 
 	/// Returns the node this encoder's container writes into, adopting `kind`
@@ -84,7 +91,21 @@ final class ArchiveEncoder: Encoder {
 	/// The single point every encoded value passes through. Secret carriers and
 	/// embedded archives are recognised **by type, before** `encode(to:)`, so a
 	/// carrier's throwing conformance is never reached inside this coder.
-	func wrap(_ value: some Encodable, at path: [any CodingKey]) throws -> ArchiveNode {
+	func wrap(
+		_ value: some Encodable, at path: [any CodingKey], depth: Int
+	) throws -> ArchiveNode {
+		// The decoder refuses anything nested past `ArchiveIndex.maxDepth`, and
+		// for three review rounds the encoder had no matching rule — so an
+		// ordinary recursive `Codable` (an `indirect enum` 65 levels deep)
+		// encoded and sealed without complaint and then threw on every attempt
+		// to read it back. Enforcing the *same* constant here is what makes the
+		// two definitions of a valid archive agree; enforcing it during tree
+		// construction rather than at serialization also bounds the recursion
+		// itself, which otherwise overflows the stack on a deep enough value.
+		guard depth <= ArchiveIndex.maxDepth else {
+			failure.record(.nestingTooDeep)
+			return ArchiveNode(.null)
+		}
 		if let secret = value as? AnySecretField {
 			return ArchiveNode(.secret(secret))
 		}
@@ -94,7 +115,7 @@ final class ArchiveEncoder: Encoder {
 		if let data = value as? Data {
 			return ArchiveNode(.bytes(data))
 		}
-		let child = ArchiveEncoder(codingPath: path, failure: failure)
+		let child = ArchiveEncoder(codingPath: path, failure: failure, depth: depth)
 		try value.encode(to: child)
 		return child.node ?? ArchiveNode(.null)
 	}
@@ -104,18 +125,21 @@ final class ArchiveEncoder: Encoder {
 	func container<Key: CodingKey>(keyedBy type: Key.Type) -> KeyedEncodingContainer<Key> {
 		KeyedEncodingContainer(
 			ArchiveKeyedContainer<Key>(
-				encoder: self, node: box(shapedAs: .map([])), codingPath: codingPath
+				encoder: self, node: box(shapedAs: .map([])),
+				codingPath: codingPath,
+				depth: depth
 			)
 		)
 	}
 
 	func unkeyedContainer() -> any UnkeyedEncodingContainer {
 		ArchiveUnkeyedContainer(
-			encoder: self, node: box(shapedAs: .array([])), codingPath: codingPath)
+			encoder: self, node: box(shapedAs: .array([])), codingPath: codingPath,
+			depth: depth)
 	}
 
 	func singleValueContainer() -> any SingleValueEncodingContainer {
-		ArchiveSingleValueContainer(encoder: self, codingPath: codingPath)
+		ArchiveSingleValueContainer(encoder: self, codingPath: codingPath, depth: depth)
 	}
 }
 
@@ -125,6 +149,8 @@ private struct ArchiveKeyedContainer<Key: CodingKey>: KeyedEncodingContainerProt
 	let encoder: ArchiveEncoder
 	let node: ArchiveNode
 	var codingPath: [any CodingKey]
+	/// Depth of `node`; children are one deeper. See `ArchiveEncoder.wrap`.
+	let depth: Int
 
 	/// Integer wire keys only when the key type opted in — never inferred.
 	private func mapKey(_ key: Key) -> ArchiveNode.MapKey {
@@ -173,24 +199,28 @@ private struct ArchiveKeyedContainer<Key: CodingKey>: KeyedEncodingContainerProt
 	mutating func encode(_ v: UInt64, forKey key: Key) throws { put(.integer(v), key) }
 
 	mutating func encode<T: Encodable>(_ value: T, forKey key: Key) throws {
-		put(try encoder.wrap(value, at: codingPath + [key]), key)
+		put(try encoder.wrap(value, at: codingPath + [key], depth: depth + 1), key)
 	}
 
 	mutating func nestedContainer<NK: CodingKey>(
 		keyedBy keyType: NK.Type, forKey key: Key
 	) -> KeyedEncodingContainer<NK> {
 		let child = ArchiveNode(.map([]))
+		if depth + 1 > ArchiveIndex.maxDepth { encoder.failure.record(.nestingTooDeep) }
 		put(child, key)
 		return KeyedEncodingContainer(
 			ArchiveKeyedContainer<NK>(
-				encoder: encoder, node: child, codingPath: codingPath + [key]))
+				encoder: encoder, node: child, codingPath: codingPath + [key],
+				depth: depth + 1))
 	}
 
 	mutating func nestedUnkeyedContainer(forKey key: Key) -> any UnkeyedEncodingContainer {
 		let child = ArchiveNode(.array([]))
+		if depth + 1 > ArchiveIndex.maxDepth { encoder.failure.record(.nestingTooDeep) }
 		put(child, key)
 		return ArchiveUnkeyedContainer(
-			encoder: encoder, node: child, codingPath: codingPath + [key])
+			encoder: encoder, node: child, codingPath: codingPath + [key],
+			depth: depth + 1)
 	}
 
 	/// Inserts a fresh node under the conventional `"super"` text key (matching
@@ -203,14 +233,17 @@ private struct ArchiveKeyedContainer<Key: CodingKey>: KeyedEncodingContainerProt
 			entries.append((key: .text("super"), value: child))
 			node.kind = .map(entries)
 		}
-		return ArchiveEncoder(codingPath: codingPath, node: child, failure: encoder.failure)
+		return ArchiveEncoder(
+			codingPath: codingPath, node: child, failure: encoder.failure,
+			depth: depth + 1)
 	}
 
 	mutating func superEncoder(forKey key: Key) -> any Encoder {
 		let child = ArchiveNode(.unset)
 		put(child, key)
 		return ArchiveEncoder(
-			codingPath: codingPath + [key], node: child, failure: encoder.failure)
+			codingPath: codingPath + [key], node: child, failure: encoder.failure,
+			depth: depth + 1)
 	}
 }
 
@@ -218,6 +251,8 @@ private struct ArchiveUnkeyedContainer: UnkeyedEncodingContainer {
 	let encoder: ArchiveEncoder
 	let node: ArchiveNode
 	var codingPath: [any CodingKey]
+	/// Depth of `node`; children are one deeper. See `ArchiveEncoder.wrap`.
+	let depth: Int
 
 	var count: Int {
 		if case .array(let items) = node.kind { return items.count }
@@ -253,36 +288,43 @@ private struct ArchiveUnkeyedContainer: UnkeyedEncodingContainer {
 	mutating func encode(_ v: UInt64) throws { append(.integer(v)) }
 
 	mutating func encode<T: Encodable>(_ value: T) throws {
-		append(try encoder.wrap(value, at: codingPath))
+		append(try encoder.wrap(value, at: codingPath, depth: depth + 1))
 	}
 
 	mutating func nestedContainer<NK: CodingKey>(
 		keyedBy keyType: NK.Type
 	) -> KeyedEncodingContainer<NK> {
 		let child = ArchiveNode(.map([]))
+		if depth + 1 > ArchiveIndex.maxDepth { encoder.failure.record(.nestingTooDeep) }
 		append(child)
 		return KeyedEncodingContainer(
 			ArchiveKeyedContainer<NK>(
-				encoder: encoder, node: child, codingPath: codingPath))
+				encoder: encoder, node: child, codingPath: codingPath,
+				depth: depth + 1))
 	}
 
 	mutating func nestedUnkeyedContainer() -> any UnkeyedEncodingContainer {
 		let child = ArchiveNode(.array([]))
+		if depth + 1 > ArchiveIndex.maxDepth { encoder.failure.record(.nestingTooDeep) }
 		append(child)
 		return ArchiveUnkeyedContainer(
-			encoder: encoder, node: child, codingPath: codingPath)
+			encoder: encoder, node: child, codingPath: codingPath,
+			depth: depth + 1)
 	}
 
 	mutating func superEncoder() -> any Encoder {
 		let child = ArchiveNode(.unset)
 		append(child)
-		return ArchiveEncoder(codingPath: codingPath, node: child, failure: encoder.failure)
+		return ArchiveEncoder(
+			codingPath: codingPath, node: child, failure: encoder.failure,
+			depth: depth + 1)
 	}
 }
 
 private struct ArchiveSingleValueContainer: SingleValueEncodingContainer {
 	let encoder: ArchiveEncoder
 	var codingPath: [any CodingKey]
+	let depth: Int
 
 	/// Writes into `encoder.node` in place when `superEncoder` preset it to a
 	/// node it already inserted into the parent tree — reassigning `node`
@@ -326,6 +368,6 @@ private struct ArchiveSingleValueContainer: SingleValueEncodingContainer {
 	mutating func encode(_ v: UInt64) throws { set(ArchiveNode.integer(v).kind) }
 
 	mutating func encode<T: Encodable>(_ value: T) throws {
-		set(try encoder.wrap(value, at: codingPath).kind)
+		set(try encoder.wrap(value, at: codingPath, depth: depth).kind)
 	}
 }
