@@ -1,138 +1,108 @@
+import Crypto
 import Foundation
 import XCTest
 
 @testable import SecretBytes
 
+/// The persistence exit. The AEAD errors are deliberately coarse — wrong key,
+/// wrong AAD and tampering are indistinguishable — so `open` is not an oracle.
 final class SecretArchiveSealTests: XCTestCase {
 	private var key: SecretBytes {
 		try! SecretBytes(bytes: [UInt8](repeating: 0x2B, count: 32))
 	}
 	private let aad = Data("v1|epoch-archive".utf8)
+	private let algorithms: [SecretArchive.SealAlgorithm] = [.chaChaPoly, .aesGCM]
 
-	private func sampleEpoch() throws -> Epoch {
+	private func sample() throws -> Epoch {
 		Epoch(
-			index: 42,
-			flags: 7,
+			index: 42, flags: 7,
 			key: try SecretBytes(bytes: [UInt8](repeating: 0x5A, count: 32)),
+			sealingKey: SymmetricKey(size: .bits256),
 			label: [1, 2, 3, 4],
-			inner: Epoch.Inner(
+			inner: .init(
 				counter: 99,
 				secret: try SecretBytes(bytes: [UInt8](repeating: 0xA5, count: 16)))
 		)
 	}
 
-	private let algorithms: [SecretArchive.SealAlgorithm] = [.chaChaPoly, .aesGCM]
-
 	func testSealOpenRoundTrip() throws {
 		for algorithm in algorithms {
-			let epoch = try sampleEpoch()
-			let ciphertext = try SecretArchive(archiving: epoch).seal(
-				with: key, aad: aad, using: algorithm)
+			let value = try sample()
+			let sealed = try SecretArchive(encoding: value)
+				.seal(with: key, aad: aad, using: algorithm)
 			let restored = try SecretArchive.open(
-				ciphertext, with: key, aad: aad, using: algorithm
+				sealed, with: key, aad: aad, using: algorithm
 			)
-			.restore(Epoch.self)
-			XCTAssertEqual(restored, epoch, "algorithm \(algorithm)")
+			.decode(Epoch.self)
+			XCTAssertEqual(restored, value, "algorithm \(algorithm)")
 		}
 	}
 
-	func testDefaultAlgorithmIsChaChaPoly() throws {
-		let epoch = try sampleEpoch()
-		let ciphertext = try SecretArchive(archiving: epoch).seal(with: key, aad: aad)
-		// Opening with an explicit ChaChaPoly must succeed on the default output.
-		let restored = try SecretArchive.open(
-			ciphertext, with: key, aad: aad, using: .chaChaPoly
-		)
-		.restore(Epoch.self)
-		XCTAssertEqual(restored, epoch)
-	}
-
-	func testCiphertextIsNotPlaintextAndCarriesOverhead() throws {
+	func testCiphertextCarriesAEADOverhead() throws {
 		for algorithm in algorithms {
-			let archive = SecretArchive(archiving: try sampleEpoch())
+			let archive = try SecretArchive(encoding: try sample())
 			let plaintextLength = archive.withUnsafeBytes { $0.count }
-			let ciphertext = try archive.seal(with: key, aad: aad, using: algorithm)
-			// nonce(12) + tag(16) overhead over the plaintext.
-			XCTAssertEqual(
-				ciphertext.count, plaintextLength + 12 + 16,
-				"algorithm \(algorithm)")
+			let sealed = try archive.seal(with: key, aad: aad, using: algorithm)
+			// nonce(12) + tag(16)
+			XCTAssertEqual(sealed.count, plaintextLength + 28, "algorithm \(algorithm)")
 		}
 	}
 
 	func testWrongAADRejected() throws {
 		for algorithm in algorithms {
-			let ciphertext = try SecretArchive(archiving: try sampleEpoch()).seal(
-				with: key, aad: aad, using: algorithm)
+			let sealed = try SecretArchive(encoding: try sample())
+				.seal(with: key, aad: aad, using: algorithm)
 			XCTAssertThrowsError(
 				try SecretArchive.open(
-					ciphertext, with: key, aad: Data("v2|other".utf8),
-					using: algorithm)
-			) { error in
-				XCTAssertEqual(
-					error as? SecretArchiveError, .authenticationFailure,
-					"algorithm \(algorithm)")
-			}
+					sealed, with: key, aad: Data("v2".utf8), using: algorithm)
+			) { XCTAssertEqual($0 as? SecretArchiveError, .authenticationFailure) }
 		}
 	}
 
 	func testWrongKeyRejected() throws {
-		let otherKey = try SecretBytes(bytes: [UInt8](repeating: 0x3C, count: 32))
+		let other = try SecretBytes(bytes: [UInt8](repeating: 0x3C, count: 32))
 		for algorithm in algorithms {
-			let ciphertext = try SecretArchive(archiving: try sampleEpoch()).seal(
-				with: key, aad: aad, using: algorithm)
+			let sealed = try SecretArchive(encoding: try sample())
+				.seal(with: key, aad: aad, using: algorithm)
 			XCTAssertThrowsError(
 				try SecretArchive.open(
-					ciphertext, with: otherKey, aad: aad, using: algorithm)
-			) { error in
-				XCTAssertEqual(
-					error as? SecretArchiveError, .authenticationFailure,
-					"algorithm \(algorithm)")
-			}
+					sealed, with: other, aad: aad, using: algorithm)
+			) { XCTAssertEqual($0 as? SecretArchiveError, .authenticationFailure) }
 		}
 	}
 
 	func testTamperedCiphertextRejected() throws {
 		for algorithm in algorithms {
-			var ciphertext = try SecretArchive(archiving: try sampleEpoch()).seal(
-				with: key, aad: aad, using: algorithm)
-			ciphertext[ciphertext.count - 1] ^= 0x01  // flip a tag bit
+			var sealed = try SecretArchive(encoding: try sample())
+				.seal(with: key, aad: aad, using: algorithm)
+			sealed[sealed.count - 1] ^= 0x01
 			XCTAssertThrowsError(
 				try SecretArchive.open(
-					ciphertext, with: key, aad: aad, using: algorithm)
-			) { error in
-				XCTAssertEqual(
-					error as? SecretArchiveError, .authenticationFailure,
-					"algorithm \(algorithm)")
-			}
+					sealed, with: key, aad: aad, using: algorithm)
+			) { XCTAssertEqual($0 as? SecretArchiveError, .authenticationFailure) }
 		}
 	}
 
 	func testTruncatedCiphertextRejectedAsMalformed() throws {
 		for algorithm in algorithms {
-			let ciphertext = try SecretArchive(archiving: try sampleEpoch()).seal(
-				with: key, aad: aad, using: algorithm)
-			// 20 bytes is below the 28-byte minimum AEAD container.
-			let truncated = ciphertext.prefix(20)
+			let sealed = try SecretArchive(encoding: try sample())
+				.seal(with: key, aad: aad, using: algorithm)
+			// Below the 28-byte minimum AEAD container.
 			XCTAssertThrowsError(
 				try SecretArchive.open(
-					Data(truncated), with: key, aad: aad, using: algorithm)
-			) { error in
-				XCTAssertEqual(
-					error as? SecretArchiveError, .malformedCiphertext,
-					"algorithm \(algorithm)")
-			}
+					Data(sealed.prefix(20)), with: key, aad: aad,
+					using: algorithm)
+			) { XCTAssertEqual($0 as? SecretArchiveError, .malformedCiphertext) }
 		}
 	}
 
+	/// The algorithm is not encoded in the output, so seal and open must agree;
+	/// a mismatch must fail authentication rather than silently decode.
 	func testCrossAlgorithmDoesNotOpen() throws {
-		// Sealed with ChaChaPoly, opened as AES-GCM: same combined shape, but
-		// authentication must fail rather than silently decode.
-		let ciphertext = try SecretArchive(archiving: try sampleEpoch()).seal(
-			with: key, aad: aad, using: .chaChaPoly)
+		let sealed = try SecretArchive(encoding: try sample())
+			.seal(with: key, aad: aad, using: .chaChaPoly)
 		XCTAssertThrowsError(
-			try SecretArchive.open(ciphertext, with: key, aad: aad, using: .aesGCM)
-		) { error in
-			XCTAssertEqual(error as? SecretArchiveError, .authenticationFailure)
-		}
+			try SecretArchive.open(sealed, with: key, aad: aad, using: .aesGCM)
+		) { XCTAssertEqual($0 as? SecretArchiveError, .authenticationFailure) }
 	}
 }

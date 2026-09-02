@@ -11,10 +11,28 @@ Zeroizing custody types for secret bytes, built on
   `SecretArchive`); there is no `Codable`, no `var data`, and reflection is
   redacted.
 - **`SecretArchive`** — serializes secret-bearing state entirely in zeroizing
-  storage. A `Writer`/`Reader` pair makes the secret vs. non-secret split
-  visible at every call site, and the only exit to ordinary `Data` is an AEAD
-  `seal(with:aad:)` — so the `Data` that finally exists is ciphertext by
-  construction. `open` is the mirror.
+  storage, driven by ordinary `Codable`. Plain properties encode normally;
+  secret properties are declared `@SecretField`, and the only exit to ordinary
+  `Data` is an AEAD `seal(with:aad:)` — so the `Data` that finally exists is
+  ciphertext by construction. `open` is the mirror.
+
+```swift
+struct SessionSecrets: Codable {
+    @SecretField var sealingKey: SymmetricKey      // restores AS a SymmetricKey
+    @SecretField var exporterSecret: SecretBytes   // no key role — stays general
+    var epoch: UInt64
+}
+
+let sealed = try SecretArchive(encoding: secrets).seal(with: storageKey, aad: aad)
+let restored = try SecretArchive.open(sealed, with: storageKey, aad: aad)
+    .decode(SessionSecrets.self)
+```
+
+A secret restores as the concrete type the schema names, so a symmetric key
+arrives ready to hand to an AEAD or KDF rather than needing to be re-wrapped.
+Handing a secret-bearing type to any *other* coder — `JSONEncoder`, say — throws
+before a single byte is written, rather than base64-ing a private key into an
+immortal `String`.
 
 Plaintext secret bytes live only inside zeroizing storage, from the moment they
 are produced to the moment they are encrypted.
@@ -74,7 +92,7 @@ To report a suspected vulnerability, see [SECURITY.md](./SECURITY.md).
 
 ## Requirements
 
-- Swift 6.2+, macOS 13+, iOS 16+
+- Swift 6.1+, macOS 13+, iOS 16+
 - Depends only on swift-crypto (`SymmetricKey` and AEAD)
 
 ## Contributing

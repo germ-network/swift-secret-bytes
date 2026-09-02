@@ -1,17 +1,22 @@
 /// A serialized, secret-bearing payload held entirely in zeroizing storage.
 ///
-/// An archive is the composable middle of the custody chain: `SecretArchivable`
-/// values write their fields into a `Writer`, small archives `embed` into
-/// bigger ones, and the only exit to ordinary `Data` is `seal(with:aad:)`, which
-/// returns AEAD ciphertext. Restore is the mirror — `open` yields an archive and
-/// a `Reader` reads fields back out, secret fields going straight into
-/// `SecretBytes` with no plaintext `Data` hop.
+/// An archive is the composable middle of the custody chain: a `Codable` value
+/// encodes into one, archives `Embedded` into bigger ones, and the only exit to
+/// ordinary `Data` is `seal(with:aad:)`, which returns AEAD ciphertext. Restore
+/// is the mirror — `open` yields an archive and `decode` reads a value back out,
+/// secret fields going straight into their concrete type with no plaintext
+/// `Data` hop.
 ///
-/// Deliberately **not** `Sendable` (its backing is a mutable class) and it
-/// exposes no public byte accessor other than `seal`. Copies share the backing
-/// but the archive is immutable after construction, so there is no mutation to
-/// race.
-public struct SecretArchive {
+/// `@unchecked Sendable`: an archive is constructed once — by the encoder or by
+/// `open` — and never mutated afterward, so there is nothing to race. The
+/// `@unchecked` is only because the backing is a class; swift-crypto marks its
+/// own zeroizing store the same way (`SecureBytes` is `@unchecked Sendable`
+/// beneath a plain `Sendable` `SymmetricKey`). This matters in practice:
+/// archives cross isolation domains in real adopters, and a non-`Sendable`
+/// archive would force an escape hatch at every crossing, in app code.
+///
+/// It exposes no public byte accessor other than `seal`.
+public struct SecretArchive: @unchecked Sendable {
 	var storage: ZeroizingBuffer
 
 	init(storage: ZeroizingBuffer) {
@@ -22,7 +27,13 @@ public struct SecretArchive {
 	/// plaintext staging buffer for bulk producers. `initializer` receives a
 	/// buffer of exactly `capacity` bytes and sets `initializedCount` to the
 	/// number it wrote (which must not exceed `capacity`).
-	public init(
+	///
+	/// Internal: `capacity` is a length the *caller* chooses and traps if
+	/// violated, which is only safe for producers inside this package (the
+	/// serializer, the seal-open path) that compute their own capacity. There
+	/// is no `Reader` left to hand an external caller attacker-shaped bytes
+	/// through this entry point.
+	init(
 		unsafeUninitializedCapacity capacity: Int,
 		initializingWith initializer: (
 			_ buffer: UnsafeMutableRawBufferPointer,
@@ -46,5 +57,103 @@ public struct SecretArchive {
 		try storage.withUnsafeMutablePointerToElements { elements in
 			try body(UnsafeRawBufferPointer(start: elements, count: storage.count))
 		}
+	}
+}
+
+// MARK: - Codable entry points
+
+extension SecretArchive {
+	/// Encodes `value` into one deterministic CBOR item held entirely in
+	/// zeroizing storage.
+	///
+	/// Plain properties ride ordinary `Codable`; secret properties must be
+	/// declared with `@SecretField`, which this coder intercepts before the
+	/// carrier's own (always-throwing) conformance is reached. A secret-bearing
+	/// type handed to any other encoder throws instead of writing.
+	public init(encoding value: some Encodable) throws {
+		let encoder = ArchiveEncoder()
+		let root = try encoder.wrap(value, at: [], depth: 0)
+		// Violations the Encoder protocol's non-throwing methods could only
+		// record, not raise — a container-shape conflict, most of all. Checked
+		// before sizing so a malformed tree never reaches the wire.
+		if let failure = encoder.failure.error { throw failure }
+		let capacity = try ArchiveSerializer.size(root)
+
+		try self.init(unsafeUninitializedCapacity: capacity) { buffer, count in
+			var cursor = ArchiveWriteCursor(buffer: buffer)
+			try ArchiveSerializer.emit(root, into: &cursor)
+			// The sizing walk is an optimization, not a safety invariant — the
+			// cursor already bounds every append. This catches the other
+			// direction: a short write would leave uninitialized tail bytes.
+			guard cursor.written == capacity else {
+				throw SecretArchiveError.internalEncodingFailure
+			}
+			count = cursor.written
+		}
+
+		#if DEBUG
+			// The encoder and the decoder hold *independent* definitions of a
+			// valid archive: the decoder's is written down and enumerated
+			// (`ArchiveIndex`), the encoder's is implicit in whatever the
+			// serializer happens to emit. Nothing structural forced them to
+			// agree, and three separate defects came from that one seam —
+			// float64 zero, canonically-equivalent text keys, and nesting past
+			// the depth limit. Each sealed cleanly and could never be read
+			// back, and each was found by a human reading one decoder rule and
+			// asking whether the encoder could violate it.
+			//
+			// This closes the class rather than enumerating it: every archive
+			// this package builds is offered to its own validator, so an
+			// encoder that emits something the decoder refuses fails *here*,
+			// in whatever test happened to construct it, instead of years
+			// later on someone's restore path. Debug-only because it doubles
+			// the work of an encode; the invariant it guards is a property of
+			// the code, not of the input, so proving it in test builds proves
+			// it everywhere.
+			// The validator's own error is preserved rather than flattened: it
+			// names *which* rule the encoder broke, and this net firing at all
+			// means someone is about to spend an afternoon finding out why.
+			//
+			// A net, not a proof. It sees only shapes a test actually drives,
+			// and it is absent from release — so every rule it might catch
+			// needs a release-active guard of its own. Where a check belongs
+			// is the one place every node passes (`ArchiveSerializer.size`),
+			// not at each site that happens to create one.
+			_ = try withUnsafeBytes { try ArchiveIndex.build($0) }
+		#endif
+	}
+}
+
+extension SecretArchive {
+	/// Copies a sub-range into its own zeroizing allocation — how an embedded
+	/// archive is lifted back out without the inner bytes ever leaving
+	/// zeroizing storage.
+	func copyingRange(_ range: Range<Int>) -> SecretArchive {
+		SecretArchive(unsafeUninitializedCapacity: range.count) { buffer, count in
+			if range.count > 0 {
+				withUnsafeBytes { source in
+					buffer.baseAddress!.copyMemory(
+						from: UnsafeRawBufferPointer(
+							rebasing: source[range]
+						).baseAddress!,
+						byteCount: range.count)
+				}
+			}
+			count = range.count
+		}
+	}
+
+	/// Decodes the archive as `type`, requiring the whole archive to be
+	/// consumed.
+	///
+	/// Validation happens once, up front, over the entire document: bounds,
+	/// shortest-form heads, definite lengths, canonical and unique map keys,
+	/// UTF-8, depth, and full consumption. Only then are values materialized —
+	/// secret fields straight into the concrete type the schema names, with no
+	/// intermediate `Data`.
+	public func decode<T: Decodable>(_ type: T.Type = T.self) throws -> T {
+		let root = try withUnsafeBytes { try ArchiveIndex.build($0) }
+		let decoder = ArchiveDecoder(archive: self, node: root)
+		return try decoder.unwrap(type, from: root)
 	}
 }
