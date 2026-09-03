@@ -1,0 +1,65 @@
+name: Android
+
+on:
+  push:
+    branches:
+      - main
+    paths-ignore:
+      - "README.md"
+      - "CODE_OF_CONDUCT.md"
+      - ".editorconfig"
+      - ".spi.yml"
+  pull_request:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.head_ref || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Build ${{ matrix.triple }}
+    runs-on: ubuntu-latest
+    # The host Swift toolchain must match the Swift SDK's build version exactly
+    # (see android/toolchain-setup.md in the germDM-ios-refresh repo) — 6.3.3 is
+    # the newest Android SDK bundle at time of writing.
+    container:
+      image: swift:6.3.3
+    timeout-minutes: 30
+    strategy:
+      matrix:
+        triple:
+          - aarch64-unknown-linux-android28
+          - x86_64-unknown-linux-android28
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Install Android NDK
+        id: ndk
+        uses: nttld/setup-ndk@v1
+        with:
+          ndk-version: r27d
+
+      - name: Install Swift SDK for Android
+        run: |
+          swift sdk install \
+            https://download.swift.org/swift-6.3.3-release/android-sdk/swift-6.3.3-RELEASE/swift-6.3.3-RELEASE_android.artifactbundle.tar.gz \
+            --checksum d160cc3206dd1886dae3fef2337af5e25ec034692cd0ec225721c56cc69da7f5
+
+      # The artifactbundle ships with no ndk-sysroot; skipping this makes every
+      # C target fail with "fatal error: 'string.h' file not found", which reads
+      # like a swift-crypto/BoringSSL problem and is not one. Where SwiftPM
+      # stores the installed bundle is an implementation detail that varies by
+      # host, so ask `swift sdk configure` for the real path rather than
+      # guessing it — it reports `sdkRootPath` as
+      # `<bundle>/swift-android/ndk-sysroot`.
+      - name: Link the NDK sysroot into the Swift SDK
+        env:
+          ANDROID_NDK_HOME: ${{ steps.ndk.outputs.ndk-path }}
+        run: |
+          sdk_root="$(swift sdk configure --show-configuration swift-6.3.3-RELEASE_android ${{ matrix.triple }} | awk '/^sdkRootPath:/ {print $2}')"
+          bundle="${sdk_root%/swift-android/ndk-sysroot}"
+          bash "$bundle/swift-android/scripts/setup-android-sdk.sh"
+
+      - name: Build
+        run: swift build --swift-sdk ${{ matrix.triple }}

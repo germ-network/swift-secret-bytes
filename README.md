@@ -2,6 +2,7 @@
 
 [![Apple](https://github.com/germ-network/swift-secret-bytes/actions/workflows/ci-apple.yml/badge.svg)](https://github.com/germ-network/swift-secret-bytes/actions/workflows/ci-apple.yml)
 [![Linux](https://github.com/germ-network/swift-secret-bytes/actions/workflows/ci-linux.yml/badge.svg)](https://github.com/germ-network/swift-secret-bytes/actions/workflows/ci-linux.yml)
+[![Android](https://github.com/germ-network/swift-secret-bytes/actions/workflows/ci-android.yml/badge.svg)](https://github.com/germ-network/swift-secret-bytes/actions/workflows/ci-android.yml)
 
 Zeroizing custody types for secret bytes, built on
 [swift-crypto](https://github.com/apple/swift-crypto)'s `SymmetricKey`:
