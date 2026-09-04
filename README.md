@@ -38,6 +38,22 @@ immortal `String`.
 Plaintext secret bytes live only inside zeroizing storage, from the moment they
 are produced to the moment they are encrypted.
 
+**Why a secret can't leak here by accident.** `@SecretField` is a property
+wrapper, and the guarantee is structural, not a convention to remember.
+`SecretBytes` and `SymmetricKey` are deliberately not `Codable`, so a bare
+secret property in a `Codable` type is a **compile error** — `@SecretField` is
+the *only* way to carry one, an explicit, greppable opt-in at the declaration
+site. The archive's coder intercepts the wrapper by type identity before its
+`encode(to:)` is reached, routing the bytes straight into zeroizing storage;
+hand the type to any other coder and that `encode(to:)` runs instead and throws,
+having written nothing.
+
+The one boundary it does not cross: custody follows the *type*. A value you hold
+as plain `Data` is encoded as plain — the library cannot know it was meant to be
+secret. Classifying secrets as `SecretBytes`/`@SecretField` is the schema
+author's call; the compile error makes that the path of least resistance, but it
+cannot rescue a value already downgraded to `Data`.
+
 Zeroization narrows the window for same-process exposure — heap
 over-reads, core dumps, swap, later disclosure of memory once occupied by a secret.
 Cross-process isolation is not its job; the OS already zeroes pages
