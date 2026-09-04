@@ -14,7 +14,7 @@ final class ArchiveStage5RegressionTests: XCTestCase {
 	/// integer key outside `Int`'s range, or a non-canonical simple-value
 	/// form).
 	private func archive(_ bytes: [UInt8]) throws -> SecretArchive {
-		try SecretArchive(unsafeUninitializedCapacity: bytes.count) { buffer, count in
+		SecretArchive(unsafeUninitializedCapacity: bytes.count) { buffer, count in
 			bytes.withUnsafeBytes { buffer.copyMemory(from: $0) }
 			count = bytes.count
 		}

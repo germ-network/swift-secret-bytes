@@ -37,7 +37,7 @@ final class RFC8949AppendixATests: XCTestCase {
 
 	private func archive(_ hex: String) throws -> SecretArchive {
 		let raw = bytes(hex)
-		return try SecretArchive(unsafeUninitializedCapacity: raw.count) { buffer, count in
+		return SecretArchive(unsafeUninitializedCapacity: raw.count) { buffer, count in
 			raw.withUnsafeBytes { buffer.copyMemory(from: $0) }
 			count = raw.count
 		}

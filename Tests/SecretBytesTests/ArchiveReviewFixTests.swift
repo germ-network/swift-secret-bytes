@@ -10,7 +10,7 @@ import XCTest
 /// fail.
 final class ArchiveReviewFixTests: XCTestCase {
 	private func archive(_ bytes: [UInt8]) throws -> SecretArchive {
-		try SecretArchive(unsafeUninitializedCapacity: bytes.count) { buffer, count in
+		SecretArchive(unsafeUninitializedCapacity: bytes.count) { buffer, count in
 			bytes.withUnsafeBytes { buffer.copyMemory(from: $0) }
 			count = bytes.count
 		}
