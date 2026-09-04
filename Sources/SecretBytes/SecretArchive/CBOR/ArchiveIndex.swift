@@ -32,15 +32,11 @@ final class IndexNode {
 
 enum ArchiveIndex {
 	/// Strict UTF-8 validation, without the BOM-stripping `String(bytes:encoding:
-	/// .utf8)` (Foundation) applies. `String(decoding:as:)` never strips or
-	/// otherwise transforms a valid sequence, so re-encoding a valid decode
-	/// reproduces the exact input bytes; anything invalid decodes lossily (with
-	/// U+FFFD) and so fails the round trip. Swift 6's `String(validating:as:)`
-	/// does this natively but needs a higher deployment floor than this package
-	/// supports (macOS 13 / iOS 16).
+	/// .utf8)` (Foundation) applies. `String(validating:as:)` (stdlib) rejects
+	/// invalid input like the Foundation initializer, but — unlike it — never
+	/// treats a leading U+FEFF as anything other than a character.
 	private static func strictUTF8String(_ bytes: UnsafeRawBufferPointer) -> String? {
-		let text = String(decoding: bytes, as: UTF8.self)
-		return Array(text.utf8).elementsEqual(bytes) ? text : nil
+		String(validating: bytes, as: UTF8.self)
 	}
 
 	/// Nesting limit. Comfortably above real schemas (group-in-session-in-account

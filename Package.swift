@@ -3,7 +3,7 @@ import PackageDescription
 
 let package = Package(
 	name: "swift-secret-bytes",
-	platforms: [.iOS(.v16), .macOS(.v13)],
+	platforms: [.iOS(.v18), .macOS(.v15)],
 	products: [
 		.library(name: "SecretBytes", targets: ["SecretBytes"])
 	],
