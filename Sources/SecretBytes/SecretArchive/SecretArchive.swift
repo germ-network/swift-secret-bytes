@@ -1,3 +1,5 @@
+import Foundation
+
 /// A serialized, secret-bearing payload held entirely in zeroizing storage.
 ///
 /// An archive is the composable middle of the custody chain: a `Codable` value
@@ -121,6 +123,37 @@ extension SecretArchive {
 			// not at each site that happens to create one.
 			_ = try withUnsafeBytes { try ArchiveIndex.build($0) }
 		#endif
+	}
+}
+
+// MARK: - Plaintext ingress (migration only)
+
+extension SecretArchive {
+	/// Wraps already-plaintext archive bytes — another implementation's
+	/// migration export, say — into an archive so `decode` can read them back.
+	///
+	/// This is the one plaintext **ingress** to the custody chain, and it is a
+	/// deliberate hole: the caller necessarily holds the secret-bearing bytes as
+	/// ordinary plaintext *before* this copies them into zeroizing storage, so
+	/// the no-plaintext-`Data`-hop guarantee that `init(encoding:)` and `decode`
+	/// uphold does not reach behind this call. Use it only to ingest a trusted
+	/// cross-implementation export for migration; for archives this package
+	/// produced, `open(sealed:)` is the sealed, hole-free path.
+	///
+	/// The bytes are validated on `decode` (bounds, canonical CBOR, depth, full
+	/// consumption — the same pass `open`ed archives get), not here: this only
+	/// copies them into a zeroizing buffer, so a malformed export is caught when
+	/// it is read, never trusted on the strength of having been ingested.
+	public init(decodingPlaintext bytes: some ContiguousBytes) {
+		self = bytes.withUnsafeBytes { source in
+			SecretArchive(unsafeUninitializedCapacity: source.count) { buffer, count in
+				if source.count > 0 {
+					buffer.baseAddress!.copyMemory(
+						from: source.baseAddress!, byteCount: source.count)
+				}
+				count = source.count
+			}
+		}
 	}
 }
 
