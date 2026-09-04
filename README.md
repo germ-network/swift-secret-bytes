@@ -17,6 +17,21 @@ Zeroizing custody types for secret bytes, built on
   `Data` is an AEAD `seal(with:aad:)` — so the `Data` that finally exists is
   ciphertext by construction. `open` is the mirror.
 
+## Motivation
+Zeroization narrows the window for same-process exposure — heap
+over-reads, core dumps, swap, later disclosure of memory once occupied by a secret.
+Cross-process isolation is not its job; the OS already zeroes pages
+between processes.
+
+Swift compiler optimizations make it hard to express fine control over memory
+buffers. This control is already implemented by the `SecureBytes` storage
+underlying `SymmetricKey` (when not compiling for Darwin). The closed-source
+CryptoKit implementation on Darwin, we can infer, has similar properties.
+
+To get similar security properties for memory buffers containing secrets, we build
+this primitive around `SymmetricKey`.
+
+## Example
 ```swift
 struct SessionSecrets: Codable {
     @SecretField var sealingKey: SymmetricKey      // restores AS a SymmetricKey
@@ -38,18 +53,15 @@ immortal `String`.
 Plaintext secret bytes live only inside zeroizing storage, from the moment they
 are produced to the moment they are encrypted.
 
-Zeroization narrows the window for same-process exposure — heap
-over-reads, core dumps, swap, later disclosure of memory once occupied by a secret.
-Cross-process isolation is not its job; the OS already zeroes pages
-between processes.
-
-Swift compiler optimizations make it hard to express fine control over memory
-buffers. This control is already implemented by the `SecureBytes` storage
-underlying `SymmetricKey` (when not compiling for Darwin). The closed-source
-CryptoKit implementation on Darwin, we can infer, has similar properties.
-
-To get similar security properties for memory buffers containing secrets, we build
-this primitive around `SymmetricKey`.
+**Why a secret can't leak here by accident.** `@SecretField` is a property
+wrapper, and the guarantee is structural, not a convention to remember.
+`SecretBytes` and `SymmetricKey` are deliberately not `Codable`, so a bare
+secret property in a `Codable` type is a **compile error** — `@SecretField` is
+the *only* way to carry one, an explicit, greppable opt-in at the declaration
+site. The archive's coder intercepts the wrapper by type identity before its
+`encode(to:)` is reached, routing the bytes straight into zeroizing storage;
+hand the type to any other coder and that `encode(to:)` runs instead and throws,
+having written nothing.
 
 ## Security
 
