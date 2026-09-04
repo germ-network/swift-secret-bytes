@@ -19,9 +19,10 @@ jobs:
   build:
     name: Build ${{ matrix.triple }}
     runs-on: ubuntu-latest
-    # The host Swift toolchain must match the Swift SDK's build version exactly
-    # (see android/toolchain-setup.md in the germDM-ios-refresh repo) — 6.3.3 is
-    # the newest Android SDK bundle at time of writing.
+    # The host Swift toolchain must match the Swift SDK's build version
+    # exactly, or the cross-compile fails at build time even though
+    # `swift sdk install` appears to succeed. 6.3.3 is the newest Android SDK
+    # bundle at time of writing.
     container:
       image: swift:6.3.3
     timeout-minutes: 30

@@ -31,6 +31,18 @@ final class IndexNode {
 }
 
 enum ArchiveIndex {
+	/// Strict UTF-8 validation, without the BOM-stripping `String(bytes:encoding:
+	/// .utf8)` (Foundation) applies. `String(decoding:as:)` never strips or
+	/// otherwise transforms a valid sequence, so re-encoding a valid decode
+	/// reproduces the exact input bytes; anything invalid decodes lossily (with
+	/// U+FFFD) and so fails the round trip. Swift 6's `String(validating:as:)`
+	/// does this natively but needs a higher deployment floor than this package
+	/// supports (macOS 13 / iOS 16).
+	private static func strictUTF8String(_ bytes: UnsafeRawBufferPointer) -> String? {
+		let text = String(decoding: bytes, as: UTF8.self)
+		return Array(text.utf8).elementsEqual(bytes) ? text : nil
+	}
+
 	/// Nesting limit. Comfortably above real schemas (group-in-session-in-account
 	/// is single digits) and low enough that recursion cannot exhaust the stack.
 	static let maxDepth = 64
@@ -71,9 +83,9 @@ enum ArchiveIndex {
 			offset += length
 			if major == .text {
 				// Strict UTF-8: a text string that is not valid UTF-8 is a
-				// malformed archive, not a lossy decode.
+				// malformed archive, not a lossy decode. See strictUTF8String.
 				let bytes = UnsafeRawBufferPointer(rebasing: buffer[range])
-				guard String(bytes: bytes, encoding: .utf8) != nil else {
+				guard strictUTF8String(bytes) != nil else {
 					throw SecretArchiveError.malformedArchive
 				}
 				return IndexNode(.text(range))
@@ -181,7 +193,7 @@ enum ArchiveIndex {
 			}
 			let bytes = UnsafeRawBufferPointer(
 				rebasing: buffer[offset..<(offset + length)])
-			guard let text = String(bytes: bytes, encoding: .utf8) else {
+			guard let text = strictUTF8String(bytes) else {
 				throw SecretArchiveError.malformedArchive
 			}
 			offset += length

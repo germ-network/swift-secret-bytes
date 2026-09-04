@@ -26,8 +26,15 @@
   byte-loop fallback, same as every other platform without a native scrub
   primitive.
 
-  Build-only for now (no on-device/emulator test execution); the existing
-  `ZeroizationTests` suite already pins the fallback's correctness on Linux.
+  Build-only for now (no on-device/emulator test execution). **Correction
+  (2026-09-03):** this entry originally claimed the existing `ZeroizationTests`
+  suite already pins the Bionic fallback's correctness on Linux — false. The
+  `volatile` byte-loop only compiles on Bionic; Linux and Apple both take a
+  different branch (`explicit_bzero`/`memset_s`), so no CI leg has ever
+  actually run the code path Android takes. The loop itself is correct
+  (verified by force-compiling it natively and testing byte-exact zeroing at
+  -O0/-O3), but that verification did not happen through `ZeroizationTests` on
+  CI as claimed.
 
 ## 0.2.0
 

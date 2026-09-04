@@ -297,6 +297,66 @@ final class ArchiveReviewFixTests: XCTestCase {
 		XCTAssertEqual(try encoded.decode([String: Int].self), value)
 	}
 
+	// MARK: A leading BOM is a character, not whitespace to strip
+
+	/// `String(bytes:encoding:.utf8)` (Foundation) silently drops a leading
+	/// U+FEFF; `String(validating:as:)` (stdlib), used for every other text
+	/// decode in this file, does not. Used to decode `{"\u{FEFF}x": 1}` as
+	/// `["x": 1]` — a key rename with no error.
+	func testBOMPrefixedKeyIsNotStripped() throws {
+		//  a1  64 efbbbf78  01     {"\u{FEFF}x": 1}
+		let bytes: [UInt8] = [0xA1, 0x64, 0xEF, 0xBB, 0xBF, 0x78, 0x01]
+		XCTAssertEqual(try archive(bytes).decode([String: Int].self), ["\u{FEFF}x": 1])
+	}
+
+	/// A key and its BOM-prefixed twin are distinct strings and must both
+	/// survive. Used to seal cleanly and throw `.malformedArchive` on every
+	/// decode: `"x"` validated fine, `"\u{FEFF}x"` materialized as `"x"`, so
+	/// the map decoded as two entries under one key — the same emit/reject
+	/// split as the canonical-equivalence case above, from the opposite
+	/// direction (the archive was well-formed; only decode disagreed with
+	/// itself about what it had already validated).
+	func testBOMPrefixedKeyDistinctFromBareKey() throws {
+		//  a2  6178 02  64 efbbbf78 01     {"x": 2, "\u{FEFF}x": 1}  (canonical
+		//  order: "x"'s encoding is bytewise less than "\u{FEFF}x"'s)
+		let bytes: [UInt8] = [
+			0xA2, 0x61, 0x78, 0x02, 0x64, 0xEF, 0xBB, 0xBF, 0x78, 0x01,
+		]
+		XCTAssertEqual(
+			try archive(bytes).decode([String: Int].self),
+			["x": 2, "\u{FEFF}x": 1])
+	}
+
+	private struct BOMPrefixedKey: Codable, Equatable {
+		struct AnyKey: CodingKey {
+			var stringValue: String
+			init(_ s: String) { stringValue = s }
+			init?(stringValue s: String) { stringValue = s }
+			var intValue: Int? { nil }
+			init?(intValue: Int) { nil }
+		}
+		var value: Int
+		init(value: Int) { self.value = value }
+		func encode(to encoder: Encoder) throws {
+			var c = encoder.container(keyedBy: AnyKey.self)
+			try c.encode(value, forKey: AnyKey("\u{FEFF}v"))
+		}
+		init(from decoder: Decoder) throws {
+			let c = try decoder.container(keyedBy: AnyKey.self)
+			value = try c.decode(Int.self, forKey: AnyKey("\u{FEFF}v"))
+		}
+	}
+
+	/// The keyed-container lookup path, not just raw `[String: V]` decode.
+	/// Used to throw `keyNotFound`: the map's stored key validated and
+	/// materialized as `"v"` (BOM stripped), so a lookup for the literal
+	/// `"\u{FEFF}v"` `CodingKey` the encoder actually wrote never matched.
+	func testBOMPrefixedKeyRoundTripsThroughKeyedContainer() throws {
+		let value = BOMPrefixedKey(value: 42)
+		let encoded = try SecretArchive(encoding: value)
+		XCTAssertEqual(try encoded.decode(BOMPrefixedKey.self), value)
+	}
+
 	// MARK: The encoder never mints what the decoder refuses
 
 	private struct BothNormalizations: Encodable {
