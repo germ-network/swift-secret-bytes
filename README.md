@@ -17,6 +17,21 @@ Zeroizing custody types for secret bytes, built on
   `Data` is an AEAD `seal(with:aad:)` — so the `Data` that finally exists is
   ciphertext by construction. `open` is the mirror.
 
+## Motivation
+Zeroization narrows the window for same-process exposure — heap
+over-reads, core dumps, swap, later disclosure of memory once occupied by a secret.
+Cross-process isolation is not its job; the OS already zeroes pages
+between processes.
+
+Swift compiler optimizations make it hard to express fine control over memory
+buffers. This control is already implemented by the `SecureBytes` storage
+underlying `SymmetricKey` (when not compiling for Darwin). The closed-source
+CryptoKit implementation on Darwin, we can infer, has similar properties.
+
+To get similar security properties for memory buffers containing secrets, we build
+this primitive around `SymmetricKey`.
+
+## Example
 ```swift
 struct SessionSecrets: Codable {
     @SecretField var sealingKey: SymmetricKey      // restores AS a SymmetricKey
@@ -47,25 +62,6 @@ site. The archive's coder intercepts the wrapper by type identity before its
 `encode(to:)` is reached, routing the bytes straight into zeroizing storage;
 hand the type to any other coder and that `encode(to:)` runs instead and throws,
 having written nothing.
-
-The one boundary it does not cross: custody follows the *type*. A value you hold
-as plain `Data` is encoded as plain — the library cannot know it was meant to be
-secret. Classifying secrets as `SecretBytes`/`@SecretField` is the schema
-author's call; the compile error makes that the path of least resistance, but it
-cannot rescue a value already downgraded to `Data`.
-
-Zeroization narrows the window for same-process exposure — heap
-over-reads, core dumps, swap, later disclosure of memory once occupied by a secret.
-Cross-process isolation is not its job; the OS already zeroes pages
-between processes.
-
-Swift compiler optimizations make it hard to express fine control over memory
-buffers. This control is already implemented by the `SecureBytes` storage
-underlying `SymmetricKey` (when not compiling for Darwin). The closed-source
-CryptoKit implementation on Darwin, we can infer, has similar properties.
-
-To get similar security properties for memory buffers containing secrets, we build
-this primitive around `SymmetricKey`.
 
 ## Security
 
