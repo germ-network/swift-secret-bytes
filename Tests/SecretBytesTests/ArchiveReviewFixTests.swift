@@ -557,10 +557,11 @@ final class ArchiveReviewFixTests: XCTestCase {
 	func testLargeArrayEncodingScalesLinearly() throws {
 		#if targetEnvironment(simulator)
 			throw XCTSkip("timing ratios are not measurable on a shared simulator host")
+		#else
+			try assertLinearScaling { count in
+				[UInt8](repeating: 0x11, count: count)
+			}
 		#endif
-		try assertLinearScaling { count in
-			[UInt8](repeating: 0x11, count: count)
-		}
 	}
 
 	/// The identical hazard in `ArchiveKeyedContainer.put`, which was unpinned:
@@ -571,10 +572,11 @@ final class ArchiveReviewFixTests: XCTestCase {
 	func testLargeDictionaryEncodingScalesLinearly() throws {
 		#if targetEnvironment(simulator)
 			throw XCTSkip("timing ratios are not measurable on a shared simulator host")
+		#else
+			try assertLinearScaling { count in
+				Dictionary(uniqueKeysWithValues: (0..<count).map { ("k\($0)", $0) })
+			}
 		#endif
-		try assertLinearScaling { count in
-			Dictionary(uniqueKeysWithValues: (0..<count).map { ("k\($0)", $0) })
-		}
 	}
 
 	/// Asserts the *shape* of the curve rather than a wall-clock threshold, so
