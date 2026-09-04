@@ -31,6 +31,14 @@ final class IndexNode {
 }
 
 enum ArchiveIndex {
+	/// Strict UTF-8 validation, without the BOM-stripping `String(bytes:encoding:
+	/// .utf8)` (Foundation) applies. `String(validating:as:)` (stdlib) rejects
+	/// invalid input like the Foundation initializer, but — unlike it — never
+	/// treats a leading U+FEFF as anything other than a character.
+	private static func strictUTF8String(_ bytes: UnsafeRawBufferPointer) -> String? {
+		String(validating: bytes, as: UTF8.self)
+	}
+
 	/// Nesting limit. Comfortably above real schemas (group-in-session-in-account
 	/// is single digits) and low enough that recursion cannot exhaust the stack.
 	static let maxDepth = 64
@@ -71,9 +79,9 @@ enum ArchiveIndex {
 			offset += length
 			if major == .text {
 				// Strict UTF-8: a text string that is not valid UTF-8 is a
-				// malformed archive, not a lossy decode.
+				// malformed archive, not a lossy decode. See strictUTF8String.
 				let bytes = UnsafeRawBufferPointer(rebasing: buffer[range])
-				guard String(bytes: bytes, encoding: .utf8) != nil else {
+				guard strictUTF8String(bytes) != nil else {
 					throw SecretArchiveError.malformedArchive
 				}
 				return IndexNode(.text(range))
@@ -181,7 +189,7 @@ enum ArchiveIndex {
 			}
 			let bytes = UnsafeRawBufferPointer(
 				rebasing: buffer[offset..<(offset + length)])
-			guard let text = String(bytes: bytes, encoding: .utf8) else {
+			guard let text = strictUTF8String(bytes) else {
 				throw SecretArchiveError.malformedArchive
 			}
 			offset += length

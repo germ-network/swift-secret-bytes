@@ -105,7 +105,7 @@ To report a suspected vulnerability, see [SECURITY.md](./SECURITY.md).
 
 ## Requirements
 
-- Swift 6.1+, macOS 13+, iOS 16+
+- Swift 6.1+, macOS 15+, iOS 18+
 - Depends only on swift-crypto (`SymmetricKey` and AEAD)
 
 ## Contributing
