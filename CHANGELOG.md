@@ -1,5 +1,18 @@
 # @germ-network/swift-secret-bytes
 
+## 0.4.0
+
+### Minor Changes
+
+- [#10](https://github.com/germ-network/swift-secret-bytes/pull/10) [`149ede8`](https://github.com/germ-network/swift-secret-bytes/commit/149ede8690388d329d7d9e2068028db21733c83a) Thanks [@germ-mark](https://github.com/germ-mark)! - Add `SecretArchive.init(decodingPlaintext:)` — the one plaintext ingress to the
+  custody chain. It wraps already-plaintext archive bytes (another
+  implementation's migration export) into a `SecretArchive` so `decode` can read
+  them back, copying them into zeroizing storage. A deliberate hole, justified
+  only for ingesting a trusted cross-implementation export; the bytes are
+  validated on `decode` (the same up-front pass sealed archives get), not at
+  ingress. Unblocks migrating a group into swift-mls from a peer implementation's
+  plaintext format-1 export (shipped in [#9](https://github.com/germ-network/swift-secret-bytes/issues/9)).
+
 ## 0.3.0
 
 ### Minor Changes
