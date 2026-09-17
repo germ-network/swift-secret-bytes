@@ -1,5 +1,47 @@
 # @germ-network/swift-secret-bytes
 
+## 0.5.0
+
+### Minor Changes
+
+- [#12](https://github.com/germ-network/swift-secret-bytes/pull/12) [`7d922e3`](https://github.com/germ-network/swift-secret-bytes/commit/7d922e3b957535380ac66aae64f343df908f55ed) Thanks [@germ-mark](https://github.com/germ-mark)! - Fix `SecretArchive` decode: a text key or value with a leading U+FEFF (BOM)
+  was silently stripped by Foundation's `String(bytes:encoding:.utf8)`, which
+  the encoder's stdlib `String(decoding:as:)` never does. Consequences ranged
+  from a silent key rename (`{"\u{FEFF}x": 1}` decoded as `["x": 1]`) to a
+  well-formed archive throwing `.malformedArchive` on every decode (a
+  BOM-prefixed key alongside its bare form collided after stripping) to
+  `keyNotFound` on a keyed-container lookup for a `CodingKey` whose
+  `stringValue` legitimately started with U+FEFF.
+
+  Fixed with stdlib's `String(validating:as:)`, which validates UTF-8 exactly
+  like the Foundation initializer without its BOM-stripping behavior.
+
+  **Breaking:** raises the deployment floor to macOS 15 / iOS 18 —
+  `String(validating:as:)` needs it. The alternative (hand-rolling the same
+  validation at the previous macOS 13 / iOS 16 floor) was rejected in favor of
+  depending on the platform's own implementation of a property this exact
+  library exists to get right.
+
+- [#15](https://github.com/germ-network/swift-secret-bytes/pull/15) [`7756dee`](https://github.com/germ-network/swift-secret-bytes/commit/7756deee772fc8053774a5b69d56c7fd487271c1) Thanks [@germ-mark](https://github.com/germ-mark)! - Adopt swift-crypto 5.0 and its cross-platform span surface; decrypt archives
+  in place.
+
+  - `SecretArchive.open` now runs the AEAD **in place** over the archive's own
+    zeroizing buffer wherever the span-based API exists (non-CryptoKit
+    platforms, via swift-crypto 5; Darwin at runtime on OS 27 or newer built
+    against the Xcode 27 or newer SDK), eliminating the transient plaintext
+    `Data` on those paths — see `SECURITY.md` / the README Security section.
+    Everywhere else (Darwin built against an older SDK, or running below
+    OS 27) `open` keeps the previous decrypt-and-scrub behavior unchanged.
+  - `SecretBytes.init(copyingWithZeroing:)` and
+    `SecretBytes.init(byteCount:initializingWith:)` are now available on
+    non-CryptoKit platforms (previously Darwin-only via CryptoKit), with the
+    same OS-27 availability on Darwin.
+
+  **Breaking:** raises the toolchain floor to Swift 6.2 — swift-crypto 5.0
+  requires it. On Darwin, the span-based surface additionally requires a
+  Swift 6.4 compiler with the Xcode 27 (or newer) SDK; older toolchains compile
+  the package without it. The macOS 15 / iOS 18 deployment floor is unchanged.
+
 ## 0.4.0
 
 ### Minor Changes
