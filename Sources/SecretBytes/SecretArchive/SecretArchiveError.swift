@@ -3,8 +3,8 @@
 /// Two deliberate shapes here. The AEAD cases are **coarse**:
 /// `authenticationFailure` covers wrong key, wrong AAD, and tampering alike, so
 /// `open` is not a distinguishing oracle, and the underlying
-/// swift-crypto/CryptoKit error is never surfaced (it differs across platforms
-/// and across the supported swift-crypto range). The decode cases are
+/// swift-crypto/CryptoKit error is never surfaced (it differs across
+/// platforms). The decode cases are
 /// **fine-grained**, which is safe: they describe the *plaintext* after
 /// authentication has already succeeded.
 ///

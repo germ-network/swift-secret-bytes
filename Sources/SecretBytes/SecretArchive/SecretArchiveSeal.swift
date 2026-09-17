@@ -69,15 +69,215 @@ extension SecretArchive {
 	/// Restores an archive from `seal`ed ciphertext. `key`, `aad`, and
 	/// `algorithm` must match the seal, or this throws `.authenticationFailure`.
 	///
-	/// swift-crypto's only public AEAD decrypt returns `Data`, so one transient
-	/// plaintext copy is unavoidable here. It is copied into zeroizing storage
-	/// and then scrubbed while it is the sole owner of its buffer — best-effort,
-	/// and recorded as a named residue in `SECURITY.md`.
+	/// The AEAD runs **in place** over the archive's own zeroizing buffer where
+	/// the span surface exists (swift-crypto 5 on non-CryptoKit platforms;
+	/// CryptoKit at runtime on OS 27 or newer on Darwin), so the plaintext only
+	/// ever exists in zeroizing memory — no transient `Data`. Everywhere else —
+	/// including a Darwin build against a pre-Xcode-27 SDK, which takes the
+	/// fallback unconditionally regardless of the runtime OS — swift-crypto's
+	/// public AEAD decrypt returns `Data`, one transient plaintext copy is
+	/// unavoidable, and it is scrubbed while the sole owner of its buffer —
+	/// best-effort, recorded as a named residue in `SECURITY.md`.
 	public static func open(
 		_ ciphertext: Data,
 		with key: SecretBytes,
 		aad: Data,
 		using algorithm: SealAlgorithm = .chaChaPoly
+	) throws -> SecretArchive {
+		#if canImport(CryptoKit, _version: 383) && compiler(>=6.4)
+			// The span surface is OS-27-gated at runtime on Darwin.
+			if #available(iOS 27.0, macOS 27.0, watchOS 27.0, tvOS 27.0,
+			macCatalyst 27.0,
+			visionOS 27.0, *) {
+				return try openInPlace(
+					ciphertext, with: key, aad: aad, using: algorithm)
+			} else {
+				return try openWithTransientPlaintext(
+					ciphertext, with: key, aad: aad, using: algorithm)
+			}
+		#elseif canImport(CryptoKit)
+			return try openWithTransientPlaintext(
+				ciphertext, with: key, aad: aad, using: algorithm)
+		#else
+			return try openInPlace(
+				ciphertext, with: key, aad: aad, using: algorithm)
+		#endif
+	}
+
+	// The span path, compiled exactly where the span gate is true — see the
+	// gate comment in SecretBytesSpan.swift. The two branches below duplicate
+	// `openInPlace` body-for-body; the Darwin copy adds OS-27 availability.
+	// Keep them in sync.
+	#if canImport(CryptoKit, _version: 383) && compiler(>=6.4)
+		@available(
+			iOS 27.0, macOS 27.0, watchOS 27.0, tvOS 27.0, macCatalyst 27.0,
+			visionOS 27.0, *
+		)
+		/// Decrypts into the archive's own zeroizing storage, in place. The
+		/// combined representation is `nonce ‖ ciphertext ‖ tag` (12-byte nonce,
+		/// 16-byte tag for both ciphers), matching `SealedBox`'s `combined` —
+		/// the fallback path must interoperate byte for byte.
+		private static func openInPlace(
+			_ ciphertext: Data,
+			with key: SecretBytes,
+			aad: Data,
+			using algorithm: SealAlgorithm
+		) throws -> SecretArchive {
+			// Container framing, checked before any AEAD work. The fallback's
+			// `SealedBox(combined:)` throws below exactly this length.
+			guard ciphertext.count >= 12 + 16 else {
+				throw SecretArchiveError.malformedCiphertext
+			}
+			let plaintextCount = ciphertext.count - 12 - 16
+			do {
+				// The AEAD writes the plaintext over the ciphertext bytes inside
+				// the archive's buffer. If it throws, no `SecretArchive` value is
+				// produced and the buffer's deinit scrubs the whole allocation,
+				// so nothing written so far survives the failure.
+				return try SecretArchive(
+					unsafeUninitializedCapacity: plaintextCount
+				) {
+					buffer, count in
+					try ciphertext.withUnsafeBytes { combined in
+						let base = combined.baseAddress!
+						if plaintextCount > 0 {
+							buffer.baseAddress?.copyMemory(
+								from: base.advanced(by: 12),
+								byteCount: plaintextCount)
+						}
+						let nonceSpan = RawSpan(
+							_unsafeBytes: UnsafeRawBufferPointer(
+								start: base, count: 12))
+						let tagSpan = RawSpan(
+							_unsafeBytes: UnsafeRawBufferPointer(
+								start: base.advanced(
+									by: ciphertext.count - 16),
+								count: 16))
+						var message = MutableRawSpan(_unsafeBytes: buffer)
+						try aad.withUnsafeBytes { aadRaw in
+							let aadSpan: RawSpan? =
+								aad.isEmpty
+								? nil
+								: RawSpan(_unsafeBytes: aadRaw)
+							switch algorithm {
+							case .chaChaPoly:
+								try ChaChaPoly.open(
+									inPlace: &message,
+									using: key.symmetricKey,
+									nonce: try ChaChaPoly.Nonce(
+										copying: nonceSpan),
+									authenticating: aadSpan,
+									tag: tagSpan)
+							case .aesGCM:
+								try AES.GCM.open(
+									inPlace: &message,
+									using: key.symmetricKey,
+									nonce: try AES.GCM.Nonce(
+										copying: nonceSpan),
+									authenticating: aadSpan,
+									tag: tagSpan)
+							}
+						}
+					}
+					count = plaintextCount
+				}
+			} catch {
+				// The only throw sources inside are the nonce construction
+				// (cannot fail: the nonce slice is exactly 12 bytes for both
+				// ciphers) and the AEAD open. Anything that got here is an
+				// authentication failure; the underlying error is never surfaced.
+				throw SecretArchiveError.authenticationFailure
+			}
+		}
+	#elseif canImport(CryptoKit)
+		// Darwin against an older SDK: no span surface, so `openInPlace` is not
+		// built and `open` routes to the fallback unconditionally.
+	#else
+		/// Decrypts into the archive's own zeroizing storage, in place. The
+		/// combined representation is `nonce ‖ ciphertext ‖ tag` (12-byte nonce,
+		/// 16-byte tag for both ciphers), matching `SealedBox`'s `combined` —
+		/// the fallback path must interoperate byte for byte.
+		private static func openInPlace(
+			_ ciphertext: Data,
+			with key: SecretBytes,
+			aad: Data,
+			using algorithm: SealAlgorithm
+		) throws -> SecretArchive {
+			// Container framing, checked before any AEAD work. The fallback's
+			// `SealedBox(combined:)` throws below exactly this length.
+			guard ciphertext.count >= 12 + 16 else {
+				throw SecretArchiveError.malformedCiphertext
+			}
+			let plaintextCount = ciphertext.count - 12 - 16
+			do {
+				// The AEAD writes the plaintext over the ciphertext bytes inside
+				// the archive's buffer. If it throws, no `SecretArchive` value is
+				// produced and the buffer's deinit scrubs the whole allocation,
+				// so nothing written so far survives the failure.
+				return try SecretArchive(
+					unsafeUninitializedCapacity: plaintextCount
+				) {
+					buffer, count in
+					try ciphertext.withUnsafeBytes { combined in
+						let base = combined.baseAddress!
+						if plaintextCount > 0 {
+							buffer.baseAddress?.copyMemory(
+								from: base.advanced(by: 12),
+								byteCount: plaintextCount)
+						}
+						let nonceSpan = RawSpan(
+							_unsafeBytes: UnsafeRawBufferPointer(
+								start: base, count: 12))
+						let tagSpan = RawSpan(
+							_unsafeBytes: UnsafeRawBufferPointer(
+								start: base.advanced(
+									by: ciphertext.count - 16),
+								count: 16))
+						var message = MutableRawSpan(_unsafeBytes: buffer)
+						try aad.withUnsafeBytes { aadRaw in
+							let aadSpan: RawSpan? =
+								aad.isEmpty
+								? nil
+								: RawSpan(_unsafeBytes: aadRaw)
+							switch algorithm {
+							case .chaChaPoly:
+								try ChaChaPoly.open(
+									inPlace: &message,
+									using: key.symmetricKey,
+									nonce: try ChaChaPoly.Nonce(
+										copying: nonceSpan),
+									authenticating: aadSpan,
+									tag: tagSpan)
+							case .aesGCM:
+								try AES.GCM.open(
+									inPlace: &message,
+									using: key.symmetricKey,
+									nonce: try AES.GCM.Nonce(
+										copying: nonceSpan),
+									authenticating: aadSpan,
+									tag: tagSpan)
+							}
+						}
+					}
+					count = plaintextCount
+				}
+			} catch {
+				// The only throw sources inside are the nonce construction
+				// (cannot fail: the nonce slice is exactly 12 bytes for both
+				// ciphers) and the AEAD open. Anything that got here is an
+				// authentication failure; the underlying error is never surfaced.
+				throw SecretArchiveError.authenticationFailure
+			}
+		}
+	#endif
+
+	/// The pre-OS-27 fallback: same framing and error split, but the plaintext
+	/// transits one transient, scrubbed `Data` — see `open`'s discussion.
+	private static func openWithTransientPlaintext(
+		_ ciphertext: Data,
+		with key: SecretBytes,
+		aad: Data,
+		using algorithm: SealAlgorithm
 	) throws -> SecretArchive {
 		// `plaintext` is the sole owner of its buffer here (the decrypt result is
 		// never aliased or escaped), so the scrub below mutates in place rather
