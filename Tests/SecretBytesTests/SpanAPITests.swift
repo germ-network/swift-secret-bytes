@@ -1,11 +1,16 @@
-#if canImport(CryptoKit) && compiler(>=6.4)
+// Same span gate as SecretBytesSpan.swift (see the gate comment there for the
+// full site list): compiled wherever the span surface exists. On Linux the
+// members are ungated, so these run; on Darwin they run only at OS 27+ and
+// skip below it.
+#if canImport(CryptoKit, _version: 383) && compiler(>=6.4)
 	import XCTest
 
 	@testable import SecretBytes
 
-	/// Exercises the span-based CryptoKit adoption. Runs only where the OS 27
-	/// runtime is present (locally and the iOS 27 simulator CI legs); elsewhere
-	/// the tests skip.
+	/// Exercises the span-based API adoption. On Darwin these run only where the
+	/// OS 27 runtime is present (locally and the iOS 27 simulator CI legs);
+	/// elsewhere they skip. On Linux the members are always available, so the
+	/// availability guard passes trivially and the tests always run.
 	final class SpanAPITests: XCTestCase {
 		func testCopyingWithZeroingRoundTripsAndZeroesSource() throws {
 			guard

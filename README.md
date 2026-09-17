@@ -78,10 +78,15 @@ and must never be described as a guarantee.
   temporaries.
 - **Memory is not locked.** Nothing prevents pages reaching swap or a
   hibernation image.
-- **`open` transits one plaintext `Data`.** swift-crypto's only public
-  AEAD decrypt returns `Data`; the library copies it into zeroizing
-  storage and scrubs the transient while uniquely referenced, which is —
-  again — best-effort.
+- **`open`'s plaintext handling depends on the platform.** Where the
+  span-based in-place AEAD is available (non-CryptoKit platforms always, via
+  swift-crypto 5; Darwin at runtime on OS 27 or newer when built against the
+  Xcode 27 or newer SDK), the plaintext only ever exists in zeroizing
+  memory — no transient. Everywhere else — including a Darwin build against
+  an older SDK, which takes the fallback unconditionally even on an OS 27
+  runtime — the fallback decrypts through swift-crypto's public
+  `Data`-returning API: one transient plaintext copy, scrubbed while uniquely
+  referenced, which is — again — best-effort.
 
 **Span-based API (OS 27):** the OS 27 SDKs add `SymmetricKey` API that
 addresses parts of this ceiling directly, and `SecretBytes` adopts it behind
@@ -96,16 +101,21 @@ leaves its original allocation untouched) and
 material directly into zeroizing storage, no staging buffer — a callback that
 doesn't fill the span traps). The deployment floor is unchanged; the gate
 checks CryptoKit's module version, so the members must actually be present in
-the SDK the package is compiled against — not just a Swift 6.4 toolchain. They
-are CryptoKit-only — swift-crypto has no counterpart yet, so Linux keeps the
-portable path. `SymmetricKey.bytes: RawSpan` is not forwarded: returning a non-escapable
+the SDK the package is compiled against — not just a Swift 6.4 toolchain.
+Since swift-crypto 5.0 the same members are available cross-platform on
+non-CryptoKit platforms (Linux), where they are declared unconditionally in
+swift-crypto's own BoringSSL-backed module — no gate, no availability floor.
+`SymmetricKey.bytes: RawSpan` is not forwarded: returning a non-escapable
 type still requires an experimental language feature.
 
 To report a suspected vulnerability, see [SECURITY.md](./SECURITY.md).
 
 ## Requirements
 
-- Swift 6.1+, macOS 15+, iOS 18+
+- Swift 6.2+ toolchain, macOS 15+, iOS 18+. On Darwin the span-based API
+  additionally needs a Swift 6.4 compiler with the Xcode 27 (or newer) SDK;
+  with an older Darwin toolchain or SDK the package compiles, but the span
+  surface is absent and `open` uses its transient-plaintext fallback.
 - Depends only on swift-crypto (`SymmetricKey` and AEAD)
 
 ## Contributing
