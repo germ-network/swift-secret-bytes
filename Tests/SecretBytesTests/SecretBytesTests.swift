@@ -34,6 +34,25 @@ final class SecretBytesTests: XCTestCase {
 		XCTAssertEqual(secret.byteCount, bytes.count)
 	}
 
+	/// The signed-bytes ingress reinterprets each `Int8` as its raw byte — the
+	/// `jextract`/JNI arrival shape — and round-trips identically to
+	/// `init(bytes:)`.
+	func testSignedBytesIngressReinterpretsAndRoundTrips() throws {
+		let signed: [Int8] = [0, 1, -1, -2, 127, -128, 42]
+		let viaSigned = try SecretBytes(signedBytes: signed)
+		let viaUnsigned = try SecretBytes(bytes: signed.map { UInt8(bitPattern: $0) })
+		XCTAssertEqual(viaSigned, viaUnsigned)
+		XCTAssertEqual(viaSigned.byteCount, signed.count)
+		let recovered = viaSigned.withUnsafeBytes { [Int8]($0.bindMemory(to: Int8.self)) }
+		XCTAssertEqual(recovered, signed)
+	}
+
+	func testEmptySignedBytesThrows() {
+		XCTAssertThrowsError(try SecretBytes(signedBytes: [] as [Int8])) { error in
+			XCTAssertEqual(error as? SecretBytesError, .emptySecret)
+		}
+	}
+
 	/// A zero-byte secret is rejected — and rejected by *throwing*, because
 	/// `bytes` is caller data that may be attacker-influenced. A decoder handing
 	/// over a zero-length field must surface an error, not abort the process.

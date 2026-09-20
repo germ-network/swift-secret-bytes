@@ -54,6 +54,28 @@ public struct SecretBytes: Sendable, Equatable, ContiguousBytes,
 		self.symmetricKey = symmetricKey
 	}
 
+	/// Copies `signedBytes` into fresh zeroizing storage, reinterpreting each
+	/// `Int8` as its raw byte.
+	///
+	/// This is the ingress for bytes that arrive across a boundary whose type is
+	/// signed: `jextract`/JNI maps a Java `byte[]` to `[Int8]`, so a secret handed
+	/// up from the JVM cannot be adopted through `init(bytes:)` — `[Int8]` is
+	/// deliberately not `ContiguousBytes`. Every bridge that avoids this
+	/// initializer (`Data(int8s)`, `.map { UInt8(bitPattern: $0) }`) mints an
+	/// unscrubbed plaintext copy of the secret; this one copies straight into
+	/// `SymmetricKey`'s zeroizing backing with no intermediate.
+	///
+	/// - Throws: `SecretBytesError.emptySecret` if `signedBytes` is empty,
+	///   matching `init(bytes:)` — the input is caller data and may be
+	///   attacker-influenced.
+	public init(signedBytes: [Int8]) throws {
+		let symmetricKey = signedBytes.withUnsafeBytes { SymmetricKey(data: $0) }
+		guard symmetricKey.withUnsafeBytes({ !$0.isEmpty }) else {
+			throw SecretBytesError.emptySecret
+		}
+		self.symmetricKey = symmetricKey
+	}
+
 	/// Generates `count` cryptographically random bytes in zeroizing storage.
 	///
 	/// - Precondition: `count > 0`. Unlike `init(bytes:)` this argument is a
