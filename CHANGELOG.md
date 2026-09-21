@@ -1,5 +1,18 @@
 # @germ-network/swift-secret-bytes
 
+## 0.6.0
+
+### Minor Changes
+
+- [#16](https://github.com/germ-network/swift-secret-bytes/pull/16) [`3f6b4fa`](https://github.com/germ-network/swift-secret-bytes/commit/3f6b4fad69101bcb0898b8dca559d1cbc9357078) Thanks [@germ-mark](https://github.com/germ-mark)! - Add a UTF-8 text bridge to `SecretBytes`: `init(utf8:)` to wrap a string into
+  zeroizing custody, and `utf8String()` to materialize one — the one deliberate
+  text exit from the type, documented as a transient plaintext copy the caller
+  must contain. Adds `SecretBytesError.notUTF8` for a read whose bytes are not
+  valid UTF-8.
+
+  This is the shared home for the `SecretBytes`↔`String` conversion adopters
+  (e.g. oauth4swift) were otherwise each writing for themselves.
+
 ## 0.5.0
 
 ### Minor Changes
