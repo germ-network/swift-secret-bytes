@@ -1,67 +1,67 @@
 import Crypto
 import Foundation
-import XCTest
+import Testing
 
 @testable import SecretBytes
 
-final class SecretBytesTests: XCTestCase {
-	func testDescriptionRedactsBytesExactly() throws {
+@Suite struct SecretBytesTests {
+	@Test func descriptionRedactsBytesExactly() throws {
 		let secret = try SecretBytes(bytes: [UInt8](repeating: 0xAB, count: 32))
-		XCTAssertEqual(secret.description, "SecretBytes(32 bytes)")
-		XCTAssertEqual(secret.debugDescription, "SecretBytes(32 bytes)")
+		#expect(secret.description == "SecretBytes(32 bytes)")
+		#expect(secret.debugDescription == "SecretBytes(32 bytes)")
 	}
 
-	func testDescriptionTracksByteCount() throws {
-		XCTAssertEqual(
-			try SecretBytes(bytes: [1, 2, 3]).description, "SecretBytes(3 bytes)")
-		XCTAssertEqual(
-			SecretBytes(randomByteCount: 16).description, "SecretBytes(16 bytes)")
+	@Test func descriptionTracksByteCount() throws {
+		#expect(
+			try SecretBytes(bytes: [1, 2, 3]).description == "SecretBytes(3 bytes)")
+		#expect(
+			SecretBytes(randomByteCount: 16).description == "SecretBytes(16 bytes)")
 	}
 
-	func testMirrorDoesNotExposeRawBytes() throws {
+	@Test func mirrorDoesNotExposeRawBytes() throws {
 		let secret = try SecretBytes(bytes: [0xDE, 0xAD, 0xBE, 0xEF])
 		let dumped = String(reflecting: secret)
-		XCTAssertFalse(dumped.contains("222"))  // 0xDE as a decimal byte
-		XCTAssertFalse(dumped.lowercased().contains("deadbeef"))
-		XCTAssertTrue("\(Mirror(reflecting: secret).children.count)" == "1")
+		#expect(!dumped.contains("222"))  // 0xDE as a decimal byte
+		#expect(!dumped.lowercased().contains("deadbeef"))
+		#expect("\(Mirror(reflecting: secret).children.count)" == "1")
 	}
 
-	func testRoundTripsThroughWithUnsafeBytes() throws {
+	@Test func roundTripsThroughWithUnsafeBytes() throws {
 		let bytes: [UInt8] = [0, 1, 2, 3, 250, 251, 252, 253]
 		let secret = try SecretBytes(bytes: bytes)
 		let recovered = secret.withUnsafeBytes { [UInt8]($0) }
-		XCTAssertEqual(recovered, bytes)
-		XCTAssertEqual(secret.byteCount, bytes.count)
+		#expect(recovered == bytes)
+		#expect(secret.byteCount == bytes.count)
 	}
 
 	/// The signed-bytes ingress reinterprets each `Int8` as its raw byte — the
 	/// `jextract`/JNI arrival shape — and round-trips identically to
 	/// `init(bytes:)`.
-	func testSignedBytesIngressReinterpretsAndRoundTrips() throws {
+	@Test func signedBytesIngressReinterpretsAndRoundTrips() throws {
 		let signed: [Int8] = [0, 1, -1, -2, 127, -128, 42]
 		let viaSigned = try SecretBytes(signedBytes: signed)
 		let viaUnsigned = try SecretBytes(bytes: signed.map { UInt8(bitPattern: $0) })
-		XCTAssertEqual(viaSigned, viaUnsigned)
-		XCTAssertEqual(viaSigned.byteCount, signed.count)
+		#expect(viaSigned == viaUnsigned)
+		#expect(viaSigned.byteCount == signed.count)
 		let recovered = viaSigned.withUnsafeBytes { [Int8]($0.bindMemory(to: Int8.self)) }
-		XCTAssertEqual(recovered, signed)
+		#expect(recovered == signed)
 	}
 
-	func testEmptySignedBytesThrows() {
-		XCTAssertThrowsError(try SecretBytes(signedBytes: [] as [Int8])) { error in
-			XCTAssertEqual(error as? SecretBytesError, .emptySecret)
+	@Test func emptySignedBytesThrows() {
+		#expect(throws: SecretBytesError.emptySecret) {
+			try SecretBytes(signedBytes: [] as [Int8])
 		}
 	}
 
 	/// A zero-byte secret is rejected — and rejected by *throwing*, because
 	/// `bytes` is caller data that may be attacker-influenced. A decoder handing
 	/// over a zero-length field must surface an error, not abort the process.
-	func testEmptySecretThrows() {
-		XCTAssertThrowsError(try SecretBytes(bytes: [] as [UInt8])) { error in
-			XCTAssertEqual(error as? SecretBytesError, .emptySecret)
+	@Test func emptySecretThrows() {
+		#expect(throws: SecretBytesError.emptySecret) {
+			try SecretBytes(bytes: [] as [UInt8])
 		}
-		XCTAssertThrowsError(try SecretBytes(bytes: Data())) { error in
-			XCTAssertEqual(error as? SecretBytesError, .emptySecret)
+		#expect(throws: SecretBytesError.emptySecret) {
+			try SecretBytes(bytes: Data())
 		}
 	}
 
@@ -69,28 +69,28 @@ final class SecretBytesTests: XCTestCase {
 	/// public API, but if one is reached through the internal initializer it
 	/// must still compare reflexively — `SymmetricKey`'s constant-time compare
 	/// returns false for zero-length input, and the failure would be silent.
-	func testEmptySecretViaInternalInitStillComparesReflexively() throws {
+	@Test func emptySecretViaInternalInitStillComparesReflexively() throws {
 		let empty = SecretBytes(SymmetricKey(data: Data()))
 		let alsoEmpty = SecretBytes(SymmetricKey(data: Data()))
 		let one = try SecretBytes(bytes: [0])
 
-		XCTAssertEqual(empty.byteCount, 0)
-		XCTAssertEqual(empty, empty, "reflexivity must hold even for the unreachable case")
-		XCTAssertEqual(empty, alsoEmpty)
-		XCTAssertNotEqual(empty, one)
-		XCTAssertNotEqual(one, empty)
+		#expect(empty.byteCount == 0)
+		#expect(empty == empty, "reflexivity must hold even for the unreachable case")
+		#expect(empty == alsoEmpty)
+		#expect(empty != one)
+		#expect(one != empty)
 	}
 
-	func testEqualityIsValueBased() throws {
+	@Test func equalityIsValueBased() throws {
 		let a = try SecretBytes(bytes: [9, 9, 9])
 		let b = try SecretBytes(bytes: [9, 9, 9])
 		let c = try SecretBytes(bytes: [9, 9, 8])
-		XCTAssertEqual(a, b)
-		XCTAssertEqual(a, a)
-		XCTAssertNotEqual(a, c)
+		#expect(a == b)
+		#expect(a == a)
+		#expect(a != c)
 	}
 
-	func testSecretBytesIsSendable() {
+	@Test func secretBytesIsSendable() {
 		func requireSendable<T: Sendable>(_: T.Type) {}
 		requireSendable(SecretBytes.self)
 	}

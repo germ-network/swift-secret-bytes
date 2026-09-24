@@ -1,5 +1,5 @@
 import Foundation
-import XCTest
+import Testing
 
 @testable import SecretBytes
 
@@ -22,7 +22,7 @@ import XCTest
 /// before being sorted into these two buckets, so the split itself is a
 /// verified fact about this implementation, not an assumption baked into the
 /// test.
-final class RFC8949AppendixATests: XCTestCase {
+@Suite struct RFC8949AppendixATests {
 	private func bytes(_ hex: String) -> [UInt8] {
 		var result = [UInt8]()
 		result.reserveCapacity(hex.count / 2)
@@ -51,17 +51,19 @@ final class RFC8949AppendixATests: XCTestCase {
 	/// hostile input does — `ArchiveIndex.build` throws before any target
 	/// type is consulted, so the decode target here is arbitrary.
 	private func assertRejected(
-		_ hex: String, _ diagnostic: String, file: StaticString = #filePath,
-		line: UInt = #line
+		_ hex: String, _ diagnostic: String,
+		sourceLocation: SourceLocation = #_sourceLocation
 	) throws {
-		XCTAssertThrowsError(
-			try archive(hex).decode(Int.self), diagnostic, file: file, line: line
-		) {
-			let e = $0 as? SecretArchiveError
-			XCTAssertTrue(
+		do {
+			_ = try archive(hex).decode(Int.self)
+			Issue.record(
+				"expected \(diagnostic) to throw", sourceLocation: sourceLocation)
+		} catch {
+			let e = error as? SecretArchiveError
+			#expect(
 				e == .malformedArchive || e == .truncated || e == .trailingBytes,
-				"expected a format error for \(diagnostic), got \(String(describing: $0))",
-				file: file, line: line)
+				"expected a format error for \(diagnostic), got \(String(describing: error))",
+				sourceLocation: sourceLocation)
 		}
 	}
 
@@ -70,7 +72,7 @@ final class RFC8949AppendixATests: XCTestCase {
 	/// Table 6's plain unsigned-integer rows, one per shortest-form width:
 	/// inline (0, 1, 10, 23), one byte (24, 25, 100), two bytes (1000), four
 	/// bytes (1000000), and eight bytes (1000000000000, and UInt64.max).
-	func testAppendixAUnsignedIntegers() throws {
+	@Test func appendixAUnsignedIntegers() throws {
 		let vectors: [(hex: String, value: UInt64)] = [
 			("00", 0),
 			("01", 1),
@@ -85,13 +87,13 @@ final class RFC8949AppendixATests: XCTestCase {
 			("1bffffffffffffffff", .max),
 		]
 		for (hex, value) in vectors {
-			XCTAssertEqual(try archive(hex).decode(UInt64.self), value, hex)
+			#expect(try archive(hex).decode(UInt64.self) == value, "\(hex)")
 		}
 	}
 
 	/// The negative-integer rows that fit `Int64` — CBOR's negative encoding
 	/// (`-1-n`) is exercised across widths the same way the unsigned table is.
-	func testAppendixANegativeIntegers() throws {
+	@Test func appendixANegativeIntegers() throws {
 		let vectors: [(hex: String, value: Int64)] = [
 			("20", -1),
 			("29", -10),
@@ -99,7 +101,7 @@ final class RFC8949AppendixATests: XCTestCase {
 			("3903e7", -1000),
 		]
 		for (hex, value) in vectors {
-			XCTAssertEqual(try archive(hex).decode(Int64.self), value, hex)
+			#expect(try archive(hex).decode(Int64.self) == value, "\(hex)")
 		}
 	}
 
@@ -113,13 +115,13 @@ final class RFC8949AppendixATests: XCTestCase {
 	/// and "a missing key, a type mismatch, an out-of-range integer." This
 	/// vector has no Decodable target in this package, so only rejection is
 	/// asserted, never a decoded value.
-	func testAppendixANegativeIntegerOverflowsEveryIntegerType() throws {
+	@Test func appendixANegativeIntegerOverflowsEveryIntegerType() throws {
 		let a = try archive("3bffffffffffffffff")
-		XCTAssertThrowsError(try a.decode(Int64.self)) {
-			XCTAssertTrue($0 is DecodingError)
+		#expect(throws: DecodingError.self) {
+			try a.decode(Int64.self)
 		}
-		XCTAssertThrowsError(try a.decode(UInt64.self)) {
-			XCTAssertTrue($0 is DecodingError)
+		#expect(throws: DecodingError.self) {
+			try a.decode(UInt64.self)
 		}
 	}
 
@@ -129,7 +131,7 @@ final class RFC8949AppendixATests: XCTestCase {
 	/// `CborMajor`'s doc comment), so all of these are rejected before their
 	/// payload — a valid byte string, timestamp, or URI on its own — is even
 	/// inspected.
-	func testAppendixATagsRejected() throws {
+	@Test func appendixATagsRejected() throws {
 		let vectors: [(hex: String, diagnostic: String)] = [
 			("c249010000000000000000", "2(18446744073709551616) — bignum"),
 			("c349010000000000000000", "3(-18446744073709551617) — negative bignum"),
@@ -163,7 +165,7 @@ final class RFC8949AppendixATests: XCTestCase {
 	/// `ArchiveHostileInputTests.testNonCanonicalNaNRejected` already covers
 	/// nested in a map; here it is asserted as the RFC's own bare top-level
 	/// example.
-	func testAppendixANonCanonicalFloatsRejected() throws {
+	@Test func appendixANonCanonicalFloatsRejected() throws {
 		let vectors: [(hex: String, diagnostic: String)] = [
 			("f90000", "0.0 (float16)"),
 			("f98000", "-0.0 (float16)"),
@@ -191,30 +193,30 @@ final class RFC8949AppendixATests: XCTestCase {
 	/// the profile only special-cases NaN (which must arrive as the canonical
 	/// float16 form); `Double.infinity`/`-Double.infinity` are ordinary
 	/// float64 values like any other.
-	func testAppendixAFloat64() throws {
+	@Test func appendixAFloat64() throws {
 		let vectors: [(hex: String, value: Double)] = [
 			("fb3ff199999999999a", 1.1),
 			("fb7e37e43c8800759c", 1.0e+300),
 			("fbc010666666666666", -4.1),
 		]
 		for (hex, value) in vectors {
-			XCTAssertEqual(try archive(hex).decode(Double.self), value, hex)
+			#expect(try archive(hex).decode(Double.self) == value, "\(hex)")
 		}
-		XCTAssertEqual(try archive("fb7ff0000000000000").decode(Double.self), .infinity)
-		XCTAssertEqual(try archive("fbfff0000000000000").decode(Double.self), -.infinity)
+		#expect(try archive("fb7ff0000000000000").decode(Double.self) == .infinity)
+		#expect(try archive("fbfff0000000000000").decode(Double.self) == -.infinity)
 	}
 
 	/// The one float16 wire form the profile accepts.
-	func testAppendixACanonicalNaN() throws {
-		XCTAssertTrue(try archive("f97e00").decode(Double.self).isNaN)
+	@Test func appendixACanonicalNaN() throws {
+		#expect(try archive("f97e00").decode(Double.self).isNaN)
 	}
 
 	// MARK: - Bool, null, and the other simple values
 
-	func testAppendixABoolAndNull() throws {
-		XCTAssertEqual(try archive("f4").decode(Bool.self), false)
-		XCTAssertEqual(try archive("f5").decode(Bool.self), true)
-		XCTAssertNil(try archive("f6").decode(Int?.self))
+	@Test func appendixABoolAndNull() throws {
+		#expect(try archive("f4").decode(Bool.self) == false)
+		#expect(try archive("f5").decode(Bool.self) == true)
+		#expect(try archive("f6").decode(Int?.self) == nil)
 	}
 
 	/// `undefined` and every simple value other than false/true/null are
@@ -222,7 +224,7 @@ final class RFC8949AppendixATests: XCTestCase {
 	/// recognizes additional-info 20/21/22; everything else, including the
 	/// one-byte-argument form `simple(255)`, falls through to
 	/// `parseFloat`'s rejection.
-	func testAppendixAUndefinedAndSimpleValuesRejected() throws {
+	@Test func appendixAUndefinedAndSimpleValuesRejected() throws {
 		try assertRejected("f7", "undefined")
 		try assertRejected("f0", "simple(16)")
 		try assertRejected("f8ff", "simple(255)")
@@ -234,29 +236,29 @@ final class RFC8949AppendixATests: XCTestCase {
 	/// the rest of the suite never exercised on the decode side — and the
 	/// three non-ASCII rows, which cover a two-, three-, and four-byte UTF-8
 	/// sequence respectively.
-	func testAppendixAByteAndTextStrings() throws {
-		XCTAssertEqual(try archive("40").decode(Data.self), Data())
-		XCTAssertEqual(try archive("4401020304").decode(Data.self), Data([1, 2, 3, 4]))
-		XCTAssertEqual(try archive("60").decode(String.self), "")
-		XCTAssertEqual(try archive("6161").decode(String.self), "a")
-		XCTAssertEqual(try archive("6449455446").decode(String.self), "IETF")
-		XCTAssertEqual(try archive("62225c").decode(String.self), "\"\\")
-		XCTAssertEqual(try archive("62c3bc").decode(String.self), "\u{FC}")
-		XCTAssertEqual(try archive("63e6b0b4").decode(String.self), "\u{6C34}")
-		XCTAssertEqual(try archive("64f0908591").decode(String.self), "\u{10151}")
+	@Test func appendixAByteAndTextStrings() throws {
+		#expect(try archive("40").decode(Data.self) == Data())
+		#expect(try archive("4401020304").decode(Data.self) == Data([1, 2, 3, 4]))
+		#expect(try archive("60").decode(String.self) == "")
+		#expect(try archive("6161").decode(String.self) == "a")
+		#expect(try archive("6449455446").decode(String.self) == "IETF")
+		#expect(try archive("62225c").decode(String.self) == "\"\\")
+		#expect(try archive("62c3bc").decode(String.self) == "\u{FC}")
+		#expect(try archive("63e6b0b4").decode(String.self) == "\u{6C34}")
+		#expect(try archive("64f0908591").decode(String.self) == "\u{10151}")
 	}
 
 	// MARK: - Arrays
 
 	/// Includes the empty-array case (`[]`) the rest of the suite never
 	/// exercised on the decode side.
-	func testAppendixAArrays() throws {
-		XCTAssertEqual(try archive("80").decode([Int].self), [])
-		XCTAssertEqual(try archive("83010203").decode([Int].self), [1, 2, 3])
-		XCTAssertEqual(
+	@Test func appendixAArrays() throws {
+		#expect(try archive("80").decode([Int].self) == [])
+		#expect(try archive("83010203").decode([Int].self) == [1, 2, 3])
+		#expect(
 			try archive("98190102030405060708090a0b0c0d0e0f101112131415161718181819")
-				.decode([Int].self),
-			Array(1...25))
+				.decode([Int].self)
+				== Array(1...25))
 	}
 
 	/// `[1, [2, 3], [4, 5]]` mixes integers and arrays with no single static
@@ -264,10 +266,13 @@ final class RFC8949AppendixATests: XCTestCase {
 	/// the "wrapper" case the task allowance covers: the point is asserting
 	/// the *value*, not merely that decoding succeeds, so a throwaway sum type
 	/// is used rather than skipping the assertion.
-	func testAppendixANestedHeterogeneousArray() throws {
-		XCTAssertEqual(
-			try archive("8301820203820405").decode(JSONish.self),
-			.array([.int(1), .array([.int(2), .int(3)]), .array([.int(4), .int(5)])]))
+	@Test func appendixANestedHeterogeneousArray() throws {
+		#expect(
+			try archive("8301820203820405").decode(JSONish.self)
+				== .array([
+					.int(1), .array([.int(2), .int(3)]),
+					.array([.int(4), .int(5)]),
+				]))
 	}
 
 	// MARK: - Maps
@@ -281,8 +286,8 @@ final class RFC8949AppendixATests: XCTestCase {
 	/// `ArchiveIntegerCodingKey` (integer wire keys are opt-in and never
 	/// inferred — see that protocol's doc comment), so it would look for text
 	/// keys "1" and "3" against a map that has none.
-	func testAppendixAMaps() throws {
-		XCTAssertEqual(try archive("a0").decode([String: Int].self), [:])
+	@Test func appendixAMaps() throws {
+		#expect(try archive("a0").decode([String: Int].self) == [:])
 
 		struct OneThree: Decodable, Equatable {
 			var one: Int
@@ -292,15 +297,16 @@ final class RFC8949AppendixATests: XCTestCase {
 				case three = 3
 			}
 		}
-		XCTAssertEqual(
-			try archive("a201020304").decode(OneThree.self), OneThree(one: 2, three: 4))
+		#expect(
+			try archive("a201020304").decode(OneThree.self)
+				== OneThree(one: 2, three: 4))
 
 		struct AB: Decodable, Equatable {
 			var a: Int
 			var b: [Int]
 		}
-		XCTAssertEqual(
-			try archive("a26161016162820203").decode(AB.self), AB(a: 1, b: [2, 3]))
+		#expect(
+			try archive("a26161016162820203").decode(AB.self) == AB(a: 1, b: [2, 3]))
 
 		struct FiveLetters: Decodable, Equatable {
 			var a: String
@@ -309,20 +315,20 @@ final class RFC8949AppendixATests: XCTestCase {
 			var d: String
 			var e: String
 		}
-		XCTAssertEqual(
+		#expect(
 			try archive("a56161614161626142616361436164614461656145").decode(
-				FiveLetters.self),
-			FiveLetters(a: "A", b: "B", c: "C", d: "D", e: "E"))
+				FiveLetters.self)
+				== FiveLetters(a: "A", b: "B", c: "C", d: "D", e: "E"))
 	}
 
 	/// `["a", {"b": "c"}]` — an array containing a map — round out the
 	/// structural nesting cases the table offers beyond the pure-array one
 	/// above.
-	func testAppendixAArrayContainingMap() throws {
+	@Test func appendixAArrayContainingMap() throws {
 		struct BC: Decodable, Equatable { var b: String }
-		XCTAssertEqual(
-			try archive("826161a161626163").decode(JSONArrayOfStringOrMap.self),
-			.init([.string("a"), .map(BC(b: "c"))]))
+		#expect(
+			try archive("826161a161626163").decode(JSONArrayOfStringOrMap<BC>.self)
+				== .init([.string("a"), .map(BC(b: "c"))]))
 	}
 
 	// MARK: - Indefinite length (out of profile)
@@ -333,7 +339,7 @@ final class RFC8949AppendixATests: XCTestCase {
 	/// is rejected. `CborHead.parse` rejects additional-info 31 uniformly
 	/// regardless of major type, so this is one rule catching eleven
 	/// syntactically different shapes.
-	func testAppendixAIndefiniteLengthRejected() throws {
+	@Test func appendixAIndefiniteLengthRejected() throws {
 		let vectors: [(hex: String, diagnostic: String)] = [
 			("5f42010243030405ff", "(_ h'0102', h'030405')"),
 			("7f657374726561646d696e67ff", "(_ \"strea\", \"ming\")"),
@@ -361,12 +367,12 @@ final class RFC8949AppendixATests: XCTestCase {
 	/// this codec's decoder agrees with the RFC's own minimal examples; these
 	/// confirm the encoder does too, for every one of them the encoder can
 	/// actually produce at the top level.
-	func testEmptyContainersAndStringsEncodeToRFCBytes() throws {
+	@Test func emptyContainersAndStringsEncodeToRFCBytes() throws {
 		struct Empty: Codable {}
-		XCTAssertEqual(hex(try SecretArchive(encoding: Empty())), "a0")
-		XCTAssertEqual(hex(try SecretArchive(encoding: [Int]())), "80")
-		XCTAssertEqual(hex(try SecretArchive(encoding: Data())), "40")
-		XCTAssertEqual(hex(try SecretArchive(encoding: "")), "60")
+		#expect(hex(try SecretArchive(encoding: Empty())) == "a0")
+		#expect(hex(try SecretArchive(encoding: [Int]())) == "80")
+		#expect(hex(try SecretArchive(encoding: Data())) == "40")
+		#expect(hex(try SecretArchive(encoding: "")) == "60")
 	}
 }
 

@@ -1,6 +1,6 @@
 import Crypto
 import Foundation
-import XCTest
+import Testing
 
 @testable import SecretBytes
 
@@ -12,23 +12,23 @@ import XCTest
 /// If someone removes the conformance, these stop compiling, and the
 /// ergonomic fallback (`withUnsafeBytes { Data($0) }`) mints an unscrubbed
 /// copy per call on hot paths.
-final class ContiguousBytesInteropTests: XCTestCase {
-	func testSecretBytesConformsToContiguousBytes() {
+@Suite struct ContiguousBytesInteropTests {
+	@Test func secretBytesConformsToContiguousBytes() {
 		func requireContiguousBytes<T: ContiguousBytes>(_: T.Type) {}
 		requireContiguousBytes(SecretBytes.self)
 	}
 
-	func testFeedsSymmetricKeyDirectly() throws {
+	@Test func feedsSymmetricKeyDirectly() throws {
 		let raw = [UInt8](repeating: 0x5A, count: 32)
 		let secret = try SecretBytes(bytes: raw)
 
 		// No `Data($0)` hop — the secret is the ContiguousBytes argument.
 		let key = SymmetricKey(data: secret)
 
-		XCTAssertEqual(key.withUnsafeBytes { [UInt8]($0) }, raw)
+		#expect(key.withUnsafeBytes { [UInt8]($0) } == raw)
 	}
 
-	func testFeedsHKDFDirectly() throws {
+	@Test func feedsHKDFDirectly() throws {
 		let secret = try SecretBytes(bytes: [UInt8](repeating: 0xA5, count: 32))
 
 		let derived = HKDF<SHA256>.expand(
@@ -52,13 +52,13 @@ final class ContiguousBytesInteropTests: XCTestCase {
 			outputByteCount: 32
 		)
 
-		XCTAssertEqual(derived, again)
-		XCTAssertNotEqual(derived, other)
+		#expect(derived == again)
+		#expect(derived != other)
 	}
 
 	/// The conformance must not have widened byte access: `withUnsafeBytes`
 	/// remains the only way through, and it still yields exactly the secret.
-	func testConformanceExposesOnlyTheExistingHatch() throws {
+	@Test func conformanceExposesOnlyTheExistingHatch() throws {
 		let raw: [UInt8] = [1, 2, 3, 4, 5]
 		let secret = try SecretBytes(bytes: raw)
 
@@ -66,7 +66,7 @@ final class ContiguousBytesInteropTests: XCTestCase {
 			value.withUnsafeBytes { [UInt8]($0) }
 		}
 
-		XCTAssertEqual(readViaProtocol(secret), raw)
-		XCTAssertEqual(secret.byteCount, raw.count)
+		#expect(readViaProtocol(secret) == raw)
+		#expect(secret.byteCount == raw.count)
 	}
 }
