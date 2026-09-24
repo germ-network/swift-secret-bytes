@@ -60,14 +60,22 @@ final class ZeroizingBuffer: ManagedBuffer<Int, UInt8> {
 		/// Test-only channel for observing the deinit scrub. `armed` gates the
 		/// observation so only the buffer under test records into it.
 		///
+		/// `armed` is task-local rather than a bare global: Swift Testing runs
+		/// tests concurrently by default, all in one process, so a plain
+		/// static would let an unrelated test's buffer — released on another
+		/// task while this one is armed — write into `lastDeinitAllZero`. A
+		/// task-local is only visible on the task that set it (and its
+		/// structured children), so a concurrently-running test's deinits
+		/// read their own task's `armed`, which defaults to `false`.
+		///
 		/// Deliberately **absent from release**, unlike the inert helpers
-		/// below, for two reasons pointing the same way: it costs a static read
-		/// in every buffer's `deinit`, and it is a channel for reading memory
+		/// below, for two reasons pointing the same way: it costs a read in
+		/// every buffer's `deinit`, and it is a channel for reading memory
 		/// that just held a secret. A release binary should not carry a way to
 		/// observe scrubbed bytes, however narrow. The tests that depend on it
 		/// are `#if DEBUG` for the same reason, and say so.
 		enum ScrubWitness {
-			nonisolated(unsafe) static var armed = false
+			@TaskLocal static var armed = false
 			nonisolated(unsafe) static var lastDeinitAllZero: Bool?
 		}
 	}
