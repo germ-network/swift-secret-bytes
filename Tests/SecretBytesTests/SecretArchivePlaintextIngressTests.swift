@@ -1,13 +1,13 @@
 import Crypto
 import Foundation
-import XCTest
+import Testing
 
 @testable import SecretBytes
 
 /// The migration ingress: `init(decodingPlaintext:)` wraps already-plaintext
 /// archive bytes (another implementation's export) so `decode` can read them —
 /// the mirror of `open`'s sealed egress, but with no key, for a trusted export.
-final class SecretArchivePlaintextIngressTests: XCTestCase {
+@Suite struct SecretArchivePlaintextIngressTests {
 	private func sample() throws -> Epoch {
 		Epoch(
 			index: 42, flags: 7,
@@ -22,22 +22,26 @@ final class SecretArchivePlaintextIngressTests: XCTestCase {
 
 	/// The plaintext bytes an archive encodes to round-trip back in through
 	/// `decodingPlaintext`, secret fields intact.
-	func testPlaintextIngressRoundTrips() throws {
+	@Test func plaintextIngressRoundTrips() throws {
 		let value = try sample()
 		let plaintext = try SecretArchive(encoding: value).withUnsafeBytes { Data($0) }
 		let ingested = SecretArchive(decodingPlaintext: plaintext)
-		XCTAssertEqual(try ingested.decode(Epoch.self), value)
+		#expect(try ingested.decode(Epoch.self) == value)
 	}
 
 	/// Ingress only copies; validation is deferred to `decode`, so a malformed
 	/// document is rejected there rather than trusted for having been ingested.
-	func testMalformedPlaintextRejectedOnDecode() throws {
+	@Test func malformedPlaintextRejectedOnDecode() throws {
 		let ingested = SecretArchive(decodingPlaintext: Data([0xFF, 0x00, 0x13, 0x37]))
-		XCTAssertThrowsError(try ingested.decode(Epoch.self))
+		#expect(throws: (any Error).self) {
+			try ingested.decode(Epoch.self)
+		}
 	}
 
-	func testEmptyPlaintextRejectedOnDecode() throws {
+	@Test func emptyPlaintextRejectedOnDecode() throws {
 		let ingested = SecretArchive(decodingPlaintext: Data())
-		XCTAssertThrowsError(try ingested.decode(Epoch.self))
+		#expect(throws: (any Error).self) {
+			try ingested.decode(Epoch.self)
+		}
 	}
 }

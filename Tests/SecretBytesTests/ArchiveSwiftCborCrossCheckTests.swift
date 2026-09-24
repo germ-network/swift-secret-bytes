@@ -1,6 +1,6 @@
 import Foundation
 import SwiftCbor
-import XCTest
+import Testing
 
 @testable import SecretBytes
 
@@ -31,7 +31,7 @@ import XCTest
 /// adopters, and the reason this file's secret fixture is `0xAB`-filled
 /// rather than a real key. It is a compromise, not an invariant this file
 /// upholds.
-final class ArchiveSwiftCborCrossCheckTests: XCTestCase {
+@Suite struct ArchiveSwiftCborCrossCheckTests {
 	private func hex(_ archive: SecretArchive) -> String {
 		archive.withUnsafeBytes { $0.map { String(format: "%02x", $0) }.joined() }
 	}
@@ -113,10 +113,10 @@ final class ArchiveSwiftCborCrossCheckTests: XCTestCase {
 
 	/// swift-cbor, decoding our wire bytes into the same Swift type we
 	/// encoded, reconstructs the exact original value.
-	func testFixtureDecodesToSameValueWithSwiftCbor() throws {
+	@Test func fixtureDecodesToSameValueWithSwiftCbor() throws {
 		let ours = try SecretArchive(encoding: fixture)
 		let decoded = try CborDecoder().decode(Fixture.self, from: rawData(ours))
-		XCTAssertEqual(decoded, fixture)
+		#expect(decoded == fixture)
 	}
 
 	/// An external *validator*, not merely an external reader: swift-cbor
@@ -125,18 +125,18 @@ final class ArchiveSwiftCborCrossCheckTests: XCTestCase {
 	/// places a deterministic encoder goes silently wrong, and this is the
 	/// only assertion in the package that either is judged correct by
 	/// something other than this package.
-	func testFixturePassesSwiftCborStrictValidation() throws {
+	@Test func fixturePassesSwiftCborStrictValidation() throws {
 		let ours = try SecretArchive(encoding: fixture)
 		let decoded = try CborDecoder(options: strictOptions)
 			.decode(Fixture.self, from: rawData(ours))
-		XCTAssertEqual(decoded, fixture)
+		#expect(decoded == fixture)
 	}
 
 	/// The strict validator applied across argument widths, which the
 	/// `Fixture` alone does not reach: it holds only inline-argument and
 	/// 8-byte values, so a regression in the 1-, 2- or 4-byte head forms
 	/// would slip past `testFixtureReencodesByteIdenticalWithSwiftCbor`.
-	func testEveryArgumentWidthPassesStrictValidation() throws {
+	@Test func everyArgumentWidthPassesStrictValidation() throws {
 		struct Widths: Codable, Equatable {
 			var inlineMax: Int  // 23  — no argument byte
 			var oneByte: Int  // 24  — 1-byte argument
@@ -152,7 +152,7 @@ final class ArchiveSwiftCborCrossCheckTests: XCTestCase {
 		let ours = try SecretArchive(encoding: value)
 		let decoded = try CborDecoder(options: strictOptions)
 			.decode(Widths.self, from: rawData(ours))
-		XCTAssertEqual(decoded, value)
+		#expect(decoded == value)
 	}
 
 	/// The strongest form of the check: swift-cbor, told to sort map keys
@@ -160,10 +160,10 @@ final class ArchiveSwiftCborCrossCheckTests: XCTestCase {
 	/// profile — see `reencodeOptions`), reproduces our exact bytes when
 	/// encoding the identical value. Two independent CBOR implementations
 	/// agree not just on meaning but on the deterministic wire form.
-	func testFixtureReencodesByteIdenticalWithSwiftCbor() throws {
+	@Test func fixtureReencodesByteIdenticalWithSwiftCbor() throws {
 		let ours = try SecretArchive(encoding: fixture)
 		let theirs = try CborEncoder(options: reencodeOptions).encode(fixture)
-		XCTAssertEqual(hex(ours), hex(theirs))
+		#expect(hex(ours) == hex(theirs))
 	}
 
 	/// Confirms `reencodeOptions` is the right substitute for the built-in
@@ -171,29 +171,29 @@ final class ArchiveSwiftCborCrossCheckTests: XCTestCase {
 	/// `.deterministicCbor` picks float16 for `1.5` (RFC 8949's own Appendix A
 	/// encoding for that value), which is a different, non-float64 wire form
 	/// than this archive ever emits.
-	func testBuiltinDeterministicPresetDivergesOnFloats() throws {
+	@Test func builtinDeterministicPresetDivergesOnFloats() throws {
 		struct F: Codable { var v: Double }
 		let ours = try SecretArchive(encoding: F(v: 1.5))
 		let builtinPreset = try CborEncoder(options: .deterministicCbor).encode(F(v: 1.5))
-		XCTAssertEqual(hex(builtinPreset), "a16176f93e00")  // float16
-		XCTAssertNotEqual(hex(ours), hex(builtinPreset))
+		#expect(hex(builtinPreset) == "a16176f93e00")  // float16
+		#expect(hex(ours) != hex(builtinPreset))
 		// float64, this archive's profile:
-		XCTAssertEqual(hex(ours), "a16176fb3ff8000000000000")
+		#expect(hex(ours) == "a16176fb3ff8000000000000")
 	}
 
 	/// `0.0` and `-0.0` share a value but not a bit pattern; both this
 	/// archive and swift-cbor (with `.floatingPoint64Only`) preserve the sign
 	/// bit rather than normalizing it away.
-	func testSignedZeroReencodesByteIdentical() throws {
+	@Test func signedZeroReencodesByteIdentical() throws {
 		struct F: Codable { var v: Double }
 		let encoder = CborEncoder(options: reencodeOptions)
 
 		let ours = try SecretArchive(encoding: F(v: 0.0))
-		XCTAssertEqual(hex(ours), hex(try encoder.encode(F(v: 0.0))))
+		#expect(hex(ours) == hex(try encoder.encode(F(v: 0.0))))
 
 		let negOurs = try SecretArchive(encoding: F(v: -0.0))
-		XCTAssertEqual(hex(negOurs), hex(try encoder.encode(F(v: -0.0))))
-		XCTAssertNotEqual(hex(ours), hex(negOurs))
+		#expect(hex(negOurs) == hex(try encoder.encode(F(v: -0.0))))
+		#expect(hex(ours) != hex(negOurs))
 	}
 
 	// MARK: - The COSE_Key integer-keyed vector: structural agreement only
@@ -217,14 +217,15 @@ final class ArchiveSwiftCborCrossCheckTests: XCTestCase {
 	/// decode sees an apparently *empty* map, with no error. This is exactly
 	/// the gap `container(keyedBy:)` cannot cross — pinned here so the next
 	/// section's workaround doesn't look unmotivated.
-	func testSwiftCborKeyedContainerCannotSeeIntegerMapKeys() throws {
+	@Test func swiftCborKeyedContainerCannotSeeIntegerMapKeys() throws {
 		let d = try SecretBytes(bytes: [UInt8](repeating: 0xAB, count: 32))
 		let ours = try SecretArchive(encoding: CoseKey(d: d))
 
 		struct Probe: Decodable { var kty: Int? }
 		let probed = try CborDecoder().decode(Probe.self, from: rawData(ours))
-		XCTAssertNil(
-			probed.kty, "the integer key 1 is invisible via the keyed container path")
+		#expect(
+			probed.kty == nil,
+			"the integer key 1 is invisible via the keyed container path")
 	}
 
 	/// The workaround: a CBOR map decodes internally to the flat sequence
@@ -244,7 +245,7 @@ final class ArchiveSwiftCborCrossCheckTests: XCTestCase {
 	/// package's actual secret plaintext, which is never extracted via
 	/// `withSecretBytes` anywhere in this file. `kty` and `crv` are ordinary
 	/// (non-secret) integers, so their exact values are asserted.
-	func testCoseKeyIntegerKeyedVectorStructuralAgreement() throws {
+	@Test func coseKeyIntegerKeyedVectorStructuralAgreement() throws {
 		let d = try SecretBytes(bytes: [UInt8](repeating: 0xAB, count: 32))
 		let ours = try SecretArchive(encoding: CoseKey(d: d))
 
@@ -267,12 +268,12 @@ final class ArchiveSwiftCborCrossCheckTests: XCTestCase {
 			}
 		}
 		let walked = try CborDecoder().decode(RawCoseKeyWalk.self, from: rawData(ours))
-		XCTAssertEqual(walked.ktyKey, 1)
-		XCTAssertEqual(walked.ktyValue, 1)
-		XCTAssertEqual(walked.crvKey, -1)
-		XCTAssertEqual(walked.crvValue, 6)
-		XCTAssertEqual(walked.dKey, -4)
-		XCTAssertEqual(walked.dByteLength, 32)
+		#expect(walked.ktyKey == 1)
+		#expect(walked.ktyValue == 1)
+		#expect(walked.crvKey == -1)
+		#expect(walked.crvValue == 6)
+		#expect(walked.dKey == -4)
+		#expect(walked.dByteLength == 32)
 	}
 
 	// MARK: - Custody holds against a foreign coder too
@@ -295,13 +296,11 @@ final class ArchiveSwiftCborCrossCheckTests: XCTestCase {
 	/// for `SecretArchive` itself. `@SecretField`'s conformance is
 	/// unconditional and throws before writing regardless of which coder
 	/// reaches it.
-	func testSecretFieldTripwireFiresAgainstSwiftCborToo() throws {
+	@Test func secretFieldTripwireFiresAgainstSwiftCborToo() throws {
 		let key = try SecretBytes(bytes: [1, 2, 3])
 		let ours = try SecretArchive(encoding: SecretHolder(label: "x", key: key))
-		XCTAssertThrowsError(
+		#expect(throws: SecretArchiveError.secretOutsideSecretArchive) {
 			try CborDecoder().decode(SecretHolder.self, from: rawData(ours))
-		) {
-			XCTAssertEqual($0 as? SecretArchiveError, .secretOutsideSecretArchive)
 		}
 	}
 }

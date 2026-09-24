@@ -1,6 +1,6 @@
 import Crypto
 import Foundation
-import XCTest
+import Testing
 
 @testable import SecretBytes
 
@@ -8,7 +8,7 @@ import XCTest
 /// misbehaved before the fix, and each failure was *silent* — wrong output or
 /// lost data with no error raised, which is the worst way a wire format can
 /// fail.
-final class ArchiveReviewFixTests: XCTestCase {
+@Suite struct ArchiveReviewFixTests {
 	private func archive(_ bytes: [UInt8]) throws -> SecretArchive {
 		SecretArchive(unsafeUninitializedCapacity: bytes.count) { buffer, count in
 			bytes.withUnsafeBytes { buffer.copyMemory(from: $0) }
@@ -37,9 +37,9 @@ final class ArchiveReviewFixTests: XCTestCase {
 	/// an array, with `encode` reporting success. `JSONEncoder` traps here;
 	/// this package throws, because an aborting process is a worse answer than
 	/// an error.
-	func testConflictingContainerKindsThrowsRatherThanDroppingFields() throws {
-		XCTAssertThrowsError(try SecretArchive(encoding: TwoContainerKinds())) { error in
-			XCTAssertEqual(error as? SecretArchiveError, .internalEncodingFailure)
+	@Test func conflictingContainerKindsThrowsRatherThanDroppingFields() throws {
+		#expect(throws: SecretArchiveError.internalEncodingFailure) {
+			try SecretArchive(encoding: TwoContainerKinds())
 		}
 	}
 
@@ -57,11 +57,11 @@ final class ArchiveReviewFixTests: XCTestCase {
 	/// `Codable` permits requesting the *same* container kind twice, and both
 	/// handles write into one map. Re-shaping the node on the second request
 	/// would silently discard the first container's fields.
-	func testRepeatedSameKindContainerKeepsBothFields() throws {
+	@Test func repeatedSameKindContainerKeepsBothFields() throws {
 		//  a2  6161 01  6162 02   {"a": 1, "b": 2}
-		XCTAssertEqual(
-			hex(try SecretArchive(encoding: KeyedTwice())),
-			"a2" + "6161" + "01" + "6162" + "02")
+		#expect(
+			hex(try SecretArchive(encoding: KeyedTwice()))
+				== "a2" + "6161" + "01" + "6162" + "02")
 	}
 
 	private struct KeyedThenSingleValue: Encodable {
@@ -79,9 +79,9 @@ final class ArchiveReviewFixTests: XCTestCase {
 	/// handed out a map used to overwrite the entire container in place,
 	/// producing `67636c6f62626572` — just the string — with the keyed field
 	/// gone and no error.
-	func testSingleValueAfterKeyedContainerThrows() throws {
-		XCTAssertThrowsError(try SecretArchive(encoding: KeyedThenSingleValue())) { error in
-			XCTAssertEqual(error as? SecretArchiveError, .internalEncodingFailure)
+	@Test func singleValueAfterKeyedContainerThrows() throws {
+		#expect(throws: SecretArchiveError.internalEncodingFailure) {
+			try SecretArchive(encoding: KeyedThenSingleValue())
 		}
 	}
 
@@ -101,9 +101,9 @@ final class ArchiveReviewFixTests: XCTestCase {
 	/// the whole suite green, because the only conflict test in it happened to
 	/// fail through a redundant guard on a third write that this shape never
 	/// makes.
-	func testAbandonedConflictingContainerStillThrows() throws {
-		XCTAssertThrowsError(try SecretArchive(encoding: AbandonedContainer())) { error in
-			XCTAssertEqual(error as? SecretArchiveError, .internalEncodingFailure)
+	@Test func abandonedConflictingContainerStillThrows() throws {
+		#expect(throws: SecretArchiveError.internalEncodingFailure) {
+			try SecretArchive(encoding: AbandonedContainer())
 		}
 	}
 
@@ -131,18 +131,18 @@ final class ArchiveReviewFixTests: XCTestCase {
 	/// were the same node state, so an encoded nil looked like an empty slot
 	/// and was silently overwritten: this produced `a1616101` — the map alone,
 	/// the nil gone, no error.
-	func testEncodedNilThenContainerThrows() throws {
-		XCTAssertThrowsError(try SecretArchive(encoding: NilThenKeyed())) { error in
-			XCTAssertEqual(error as? SecretArchiveError, .internalEncodingFailure)
+	@Test func encodedNilThenContainerThrows() throws {
+		#expect(throws: SecretArchiveError.internalEncodingFailure) {
+			try SecretArchive(encoding: NilThenKeyed())
 		}
 	}
 
 	/// The same conflation made the single-value guard order-dependent:
 	/// `encode(true); encode(false)` was caught while `encodeNil(); encode(true)`
 	/// was not.
-	func testEncodedNilThenValueThrows() throws {
-		XCTAssertThrowsError(try SecretArchive(encoding: NilThenValue())) { error in
-			XCTAssertEqual(error as? SecretArchiveError, .internalEncodingFailure)
+	@Test func encodedNilThenValueThrows() throws {
+		#expect(throws: SecretArchiveError.internalEncodingFailure) {
+			try SecretArchive(encoding: NilThenValue())
 		}
 	}
 
@@ -188,13 +188,13 @@ final class ArchiveReviewFixTests: XCTestCase {
 	/// `superEncoder(forKey:)` had no coverage at all: disconnecting its child
 	/// node entirely — whole-object loss, the sibling of a defect an earlier
 	/// review already fixed in the no-argument overload — left the suite green.
-	func testSuperEncoderForKeyDeliversItsPayload() throws {
+	@Test func superEncoderForKeyDeliversItsPayload() throws {
 		let value = KeyedSuper(b: 7, inner: 42)
 		let encoded = try SecretArchive(encoding: value)
 		//  a2  6162 07  6373756201 …  {"b": 7, "sub": {"a": 42}}
-		XCTAssertEqual(
-			hex(encoded), "a2" + "6162" + "07" + "63737562" + "a1" + "6161" + "182a")
-		XCTAssertEqual(try encoded.decode(KeyedSuper.self), value)
+		#expect(
+			hex(encoded) == "a2" + "6162" + "07" + "63737562" + "a1" + "6161" + "182a")
+		#expect(try encoded.decode(KeyedSuper.self) == value)
 	}
 
 	private struct ConflictInsideSuper: Encodable {
@@ -217,9 +217,9 @@ final class ArchiveReviewFixTests: XCTestCase {
 	/// A violation inside a `superEncoder` child must reach the top: the
 	/// failure box is shared by reference precisely so a child cannot record
 	/// one where nobody looks.
-	func testConflictInsideSuperEncoderSurfaces() throws {
-		XCTAssertThrowsError(try SecretArchive(encoding: ConflictInsideSuper())) { error in
-			XCTAssertEqual(error as? SecretArchiveError, .internalEncodingFailure)
+	@Test func conflictInsideSuperEncoderSurfaces() throws {
+		#expect(throws: SecretArchiveError.internalEncodingFailure) {
+			try SecretArchive(encoding: ConflictInsideSuper())
 		}
 	}
 
@@ -235,29 +235,33 @@ final class ArchiveReviewFixTests: XCTestCase {
 	/// though the encoder emits only `a10109`. Two wire forms for one value,
 	/// and a shadowing channel into exactly the COSE_Key shape integer keying
 	/// exists to serve.
-	func testIntegerKeyedSchemaRejectsTextAlias() throws {
+	@Test func integerKeyedSchemaRejectsTextAlias() throws {
 		//  a1 63 6b7479 09   {"kty": 9}
 		let bytes: [UInt8] = [0xA1, 0x63, 0x6B, 0x74, 0x79, 0x09]
-		XCTAssertThrowsError(try archive(bytes).decode(IntKeyed.self)) { error in
+		do {
+			_ = try archive(bytes).decode(IntKeyed.self)
+			Issue.record("expected keyNotFound to be thrown")
+		} catch {
 			guard case DecodingError.keyNotFound = error else {
-				return XCTFail("expected keyNotFound, got \(error)")
+				Issue.record("expected keyNotFound, got \(error)")
+				return
 			}
 		}
 	}
 
 	/// The integer form still decodes, and round-trips byte-stably — the
 	/// property the fix exists to protect, not merely a rejection.
-	func testIntegerKeyedSchemaRoundTripsByteStably() throws {
+	@Test func integerKeyedSchemaRoundTripsByteStably() throws {
 		let value = IntKeyed(kty: 9)
 		let encoded = try SecretArchive(encoding: value)
-		XCTAssertEqual(hex(encoded), "a1" + "01" + "09")
-		XCTAssertEqual(try encoded.decode(IntKeyed.self), value)
+		#expect(hex(encoded) == "a1" + "01" + "09")
+		#expect(try encoded.decode(IntKeyed.self) == value)
 	}
 
 	/// A key with no `intValue` inside an opted-in schema still rides text, so
 	/// the decoder must mirror the encoder rather than assume every key in an
 	/// integer-keyed type is an integer.
-	func testOptedInSchemaStillMatchesItsTextKeys() throws {
+	@Test func optedInSchemaStillMatchesItsTextKeys() throws {
 		struct Mixed: Codable, Equatable {
 			var numbered: Int
 			var named: Int
@@ -269,7 +273,7 @@ final class ArchiveReviewFixTests: XCTestCase {
 		}
 		let value = Mixed(numbered: 4, named: 5)
 		let encoded = try SecretArchive(encoding: value)
-		XCTAssertEqual(try encoded.decode(Mixed.self), value)
+		#expect(try encoded.decode(Mixed.self) == value)
 	}
 
 	// MARK: Canonically-equivalent text keys (was: silent entry loss)
@@ -279,22 +283,22 @@ final class ArchiveReviewFixTests: XCTestCase {
 	/// `String`. A map holding both decoded into a `[String: Int]` of **one**
 	/// entry — two keys in, one out, no error. The encoder cannot produce
 	/// such a map, so rejecting it costs nothing real.
-	func testCanonicallyEquivalentTextKeysRejected() throws {
+	@Test func canonicallyEquivalentTextKeysRejected() throws {
 		//  a2  62 c3a9 01  63 65cc81 02   {"é"(NFC): 1, "é"(NFD): 2}
 		let bytes: [UInt8] = [
 			0xA2, 0x62, 0xC3, 0xA9, 0x01, 0x63, 0x65, 0xCC, 0x81, 0x02,
 		]
-		XCTAssertThrowsError(try archive(bytes).decode([String: Int].self)) { error in
-			XCTAssertEqual(error as? SecretArchiveError, .malformedArchive)
+		#expect(throws: SecretArchiveError.malformedArchive) {
+			try archive(bytes).decode([String: Int].self)
 		}
 	}
 
 	/// The guard must not fire on ordinary distinct keys, including non-ASCII
 	/// ones that merely share a prefix.
-	func testDistinctNonASCIIKeysStillDecode() throws {
+	@Test func distinctNonASCIIKeysStillDecode() throws {
 		let value = ["é": 1, "e": 2, "水": 3]
 		let encoded = try SecretArchive(encoding: value)
-		XCTAssertEqual(try encoded.decode([String: Int].self), value)
+		#expect(try encoded.decode([String: Int].self) == value)
 	}
 
 	// MARK: A leading BOM is a character, not whitespace to strip
@@ -303,10 +307,10 @@ final class ArchiveReviewFixTests: XCTestCase {
 	/// U+FEFF; `String(validating:as:)` (stdlib), used for every other text
 	/// decode in this file, does not. Used to decode `{"\u{FEFF}x": 1}` as
 	/// `["x": 1]` — a key rename with no error.
-	func testBOMPrefixedKeyIsNotStripped() throws {
+	@Test func bomPrefixedKeyIsNotStripped() throws {
 		//  a1  64 efbbbf78  01     {"\u{FEFF}x": 1}
 		let bytes: [UInt8] = [0xA1, 0x64, 0xEF, 0xBB, 0xBF, 0x78, 0x01]
-		XCTAssertEqual(try archive(bytes).decode([String: Int].self), ["\u{FEFF}x": 1])
+		#expect(try archive(bytes).decode([String: Int].self) == ["\u{FEFF}x": 1])
 	}
 
 	/// A key and its BOM-prefixed twin are distinct strings and must both
@@ -316,15 +320,15 @@ final class ArchiveReviewFixTests: XCTestCase {
 	/// split as the canonical-equivalence case above, from the opposite
 	/// direction (the archive was well-formed; only decode disagreed with
 	/// itself about what it had already validated).
-	func testBOMPrefixedKeyDistinctFromBareKey() throws {
+	@Test func bomPrefixedKeyDistinctFromBareKey() throws {
 		//  a2  6178 02  64 efbbbf78 01     {"x": 2, "\u{FEFF}x": 1}  (canonical
 		//  order: "x"'s encoding is bytewise less than "\u{FEFF}x"'s)
 		let bytes: [UInt8] = [
 			0xA2, 0x61, 0x78, 0x02, 0x64, 0xEF, 0xBB, 0xBF, 0x78, 0x01,
 		]
-		XCTAssertEqual(
-			try archive(bytes).decode([String: Int].self),
-			["x": 2, "\u{FEFF}x": 1])
+		#expect(
+			try archive(bytes).decode([String: Int].self)
+				== ["x": 2, "\u{FEFF}x": 1])
 	}
 
 	private struct BOMPrefixedKey: Codable, Equatable {
@@ -351,10 +355,10 @@ final class ArchiveReviewFixTests: XCTestCase {
 	/// Used to throw `keyNotFound`: the map's stored key validated and
 	/// materialized as `"v"` (BOM stripped), so a lookup for the literal
 	/// `"\u{FEFF}v"` `CodingKey` the encoder actually wrote never matched.
-	func testBOMPrefixedKeyRoundTripsThroughKeyedContainer() throws {
+	@Test func bomPrefixedKeyRoundTripsThroughKeyedContainer() throws {
 		let value = BOMPrefixedKey(value: 42)
 		let encoded = try SecretArchive(encoding: value)
-		XCTAssertEqual(try encoded.decode(BOMPrefixedKey.self), value)
+		#expect(try encoded.decode(BOMPrefixedKey.self) == value)
 	}
 
 	// MARK: The encoder never mints what the decoder refuses
@@ -382,9 +386,9 @@ final class ArchiveReviewFixTests: XCTestCase {
 	///
 	/// A hand-written `CodingKey` is all it takes, which is why "the encoder
 	/// cannot produce such a map" was the wrong reason to guard only one side.
-	func testEncoderRejectsCanonicallyEquivalentKeys() throws {
-		XCTAssertThrowsError(try SecretArchive(encoding: BothNormalizations())) { error in
-			XCTAssertEqual(error as? SecretArchiveError, .internalEncodingFailure)
+	@Test func encoderRejectsCanonicallyEquivalentKeys() throws {
+		#expect(throws: SecretArchiveError.internalEncodingFailure) {
+			try SecretArchive(encoding: BothNormalizations())
 		}
 	}
 
@@ -393,18 +397,20 @@ final class ArchiveReviewFixTests: XCTestCase {
 	/// `Float(1e300)` is `+inf` — not a lossy narrowing but a different value,
 	/// and it used to arrive silently. Precision loss stays allowed, matching
 	/// `JSONDecoder`; magnitude loss does not.
-	func testFiniteDoubleOverflowingFloatThrows() throws {
+	@Test func finiteDoubleOverflowingFloatThrows() throws {
 		struct FloatField: Codable { var v: Float }
 		let stored = try SecretArchive(encoding: ["v": 1e300])
-		XCTAssertThrowsError(try stored.decode(FloatField.self))
+		#expect(throws: (any Error).self) {
+			try stored.decode(FloatField.self)
+		}
 
 		// Precision-only narrowing still decodes.
 		let precise = try SecretArchive(encoding: ["v": 0.1])
-		XCTAssertEqual(try precise.decode(FloatField.self).v, Float(0.1))
+		#expect(try precise.decode(FloatField.self).v == Float(0.1))
 
 		// A stored infinity is itself, not an overflow.
 		let infinite = try SecretArchive(encoding: ["v": Double.infinity])
-		XCTAssertEqual(try infinite.decode(FloatField.self).v, .infinity)
+		#expect(try infinite.decode(FloatField.self).v == .infinity)
 	}
 
 	// MARK: allKeys agrees with contains
@@ -412,7 +418,7 @@ final class ArchiveReviewFixTests: XCTestCase {
 	/// `allKeys` listed a text wire key that `contains` denied and
 	/// `decodeNil(forKey:)` then reported as an explicit null — so a decoder
 	/// driven by `allKeys` read a phantom entry as a legitimately encoded nil.
-	func testAllKeysAgreesWithContainsForIntegerKeyedSchema() throws {
+	@Test func allKeysAgreesWithContainsForIntegerKeyedSchema() throws {
 		struct Probe: Decodable {
 			let keys: [String]
 			let contains: Bool
@@ -426,9 +432,9 @@ final class ArchiveReviewFixTests: XCTestCase {
 		}
 		//  a1 63 6b7479 09   {"kty": 9} — the text spelling of an integer key
 		let probe = try archive([0xA1, 0x63, 0x6B, 0x74, 0x79, 0x09]).decode(Probe.self)
-		XCTAssertEqual(probe.keys, [], "a key contains() denies must not be listed")
-		XCTAssertFalse(probe.contains)
-		XCTAssertTrue(probe.nilThrew, "an absent key is keyNotFound, not an encoded nil")
+		#expect(probe.keys == [], "a key contains() denies must not be listed")
+		#expect(!probe.contains)
+		#expect(probe.nilThrew, "an absent key is keyNotFound, not an encoded nil")
 	}
 
 	// MARK: The older guards the newer ones quietly narrowed
@@ -449,9 +455,9 @@ final class ArchiveReviewFixTests: XCTestCase {
 	/// encoder emitted `a2 01 01 01 02` (`{1: 1, 1: 2}`), which the decoder
 	/// rejects: one mutation away from another emit/reject split, in the
 	/// COSE_Key case integer keying exists for.
-	func testDuplicateIntegerKeysRejectedAtEncode() throws {
-		XCTAssertThrowsError(try SecretArchive(encoding: DuplicateIntegerKey())) { error in
-			XCTAssertEqual(error as? SecretArchiveError, .internalEncodingFailure)
+	@Test func duplicateIntegerKeysRejectedAtEncode() throws {
+		#expect(throws: SecretArchiveError.internalEncodingFailure) {
+			try SecretArchive(encoding: DuplicateIntegerKey())
 		}
 	}
 
@@ -464,14 +470,14 @@ final class ArchiveReviewFixTests: XCTestCase {
 	/// guarantee: it is compiled out of release builds, where only this guard
 	/// stands between a duplicate key and the wire. Driving the serializer
 	/// directly is what actually pins it.
-	func testSerializerItselfRejectsDuplicateIntegerKeys() throws {
+	@Test func serializerItselfRejectsDuplicateIntegerKeys() throws {
 		let map = ArchiveNode(
 			.map([
 				(key: .uint(1), value: ArchiveNode(.uint(1))),
 				(key: .uint(1), value: ArchiveNode(.uint(2))),
 			]))
-		XCTAssertThrowsError(try ArchiveSerializer.size(map)) { error in
-			XCTAssertEqual(error as? SecretArchiveError, .internalEncodingFailure)
+		#expect(throws: SecretArchiveError.internalEncodingFailure) {
+			try ArchiveSerializer.size(map)
 		}
 	}
 
@@ -479,21 +485,21 @@ final class ArchiveReviewFixTests: XCTestCase {
 	/// so after the new guard landed it no longer exercised `strictlyAscending`
 	/// at all — replacing that comparison's result wholesale kept the suite
 	/// green and made the decoder accept `a2 0101 0102`.
-	func testDuplicateIntegerKeysRejectedAtDecode() throws {
+	@Test func duplicateIntegerKeysRejectedAtDecode() throws {
 		//  a2  01 01  01 02   {1: 1, 1: 2}
 		let bytes: [UInt8] = [0xA2, 0x01, 0x01, 0x01, 0x02]
-		XCTAssertThrowsError(try archive(bytes).decode([String: Int].self)) { error in
-			XCTAssertEqual(error as? SecretArchiveError, .malformedArchive)
+		#expect(throws: SecretArchiveError.malformedArchive) {
+			try archive(bytes).decode([String: Int].self)
 		}
 	}
 
 	/// Out-of-order integer keys, likewise — the ordering half of the same
 	/// comparison, also uncovered once text keys stopped reaching it.
-	func testUnsortedIntegerKeysRejectedAtDecode() throws {
+	@Test func unsortedIntegerKeysRejectedAtDecode() throws {
 		//  a2  02 01  01 02   {2: 1, 1: 2} — descending, so not canonical
 		let bytes: [UInt8] = [0xA2, 0x02, 0x01, 0x01, 0x02]
-		XCTAssertThrowsError(try archive(bytes).decode([String: Int].self)) { error in
-			XCTAssertEqual(error as? SecretArchiveError, .malformedArchive)
+		#expect(throws: SecretArchiveError.malformedArchive) {
+			try archive(bytes).decode([String: Int].self)
 		}
 	}
 
@@ -522,18 +528,18 @@ final class ArchiveReviewFixTests: XCTestCase {
 	/// what it emits there: making `size` and `emit` disagree about its width
 	/// (a genuine sizing/fill desync) and making it emit `false` instead of
 	/// null both left the suite green.
-	func testUnusedKeyedSuperEncoderSlotEmitsNull() throws {
+	@Test func unusedKeyedSuperEncoderSlotEmitsNull() throws {
 		//  a2  6161 01  63737562 f6   {"a": 1, "sub": null}
-		XCTAssertEqual(
-			hex(try SecretArchive(encoding: UnusedKeyedSuper())),
-			"a2" + "6161" + "01" + "63737562" + "f6")
+		#expect(
+			hex(try SecretArchive(encoding: UnusedKeyedSuper()))
+				== "a2" + "6161" + "01" + "63737562" + "f6")
 	}
 
-	func testUnusedUnkeyedSuperEncoderSlotEmitsNull() throws {
+	@Test func unusedUnkeyedSuperEncoderSlotEmitsNull() throws {
 		//  83  01  f6  03   [1, null, 3]
-		XCTAssertEqual(
-			hex(try SecretArchive(encoding: UnusedUnkeyedSuper())),
-			"83" + "01" + "f6" + "03")
+		#expect(
+			hex(try SecretArchive(encoding: UnusedUnkeyedSuper()))
+				== "83" + "01" + "f6" + "03")
 	}
 
 	// MARK: Only the opt-in switches a lookup onto integer wire keys
@@ -548,7 +554,7 @@ final class ArchiveReviewFixTests: XCTestCase {
 		enum CodingKeys: Int, CodingKey { case kty = 1 }
 	}
 
-	func testNonOptedIntRawKeyAddressesByText() throws {
+	@Test func nonOptedIntRawKeyAddressesByText() throws {
 		//  a2  01 07  63 6b7479 09   {1: 7, "kty": 9}
 		let small: [UInt8] = [0xA2, 0x01, 0x07, 0x63, 0x6B, 0x74, 0x79, 0x09]
 		// {0: 0, 1: 7, 2: 0, …, 32: 0, "kty": 9} — large enough to be hashed
@@ -560,8 +566,8 @@ final class ArchiveReviewFixTests: XCTestCase {
 		}
 		padded += [0x63, 0x6B, 0x74, 0x79, 0x09]
 		for bytes in [small, padded] {
-			XCTAssertEqual(try archive(bytes).decode(IntKeyed.self).kty, 7)
-			XCTAssertEqual(try archive(bytes).decode(NonOptedKtyKey.self).kty, 9)
+			#expect(try archive(bytes).decode(IntKeyed.self).kty == 7)
+			#expect(try archive(bytes).decode(NonOptedKtyKey.self).kty == 9)
 		}
 	}
 }

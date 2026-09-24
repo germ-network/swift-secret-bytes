@@ -1,37 +1,37 @@
 import Foundation
-import XCTest
+import Testing
 
 @testable import SecretBytes
 
-final class SecretBytesTextTests: XCTestCase {
-	func testTextRoundTripsLosslessly() throws {
+@Suite struct SecretBytesTextTests {
+	@Test func textRoundTripsLosslessly() throws {
 		let text = "abc-123_XYZ.~+/="
-		XCTAssertEqual(try SecretBytes(utf8: text).utf8String(), text)
+		#expect(try SecretBytes(utf8: text).utf8String() == text)
 	}
 
-	func testTextRoundTripsMultiByteUTF8() throws {
+	@Test func textRoundTripsMultiByteUTF8() throws {
 		//not a credential shape, but the bridge is UTF-8, not ASCII-only
 		let text = "tökén-💧"
-		XCTAssertEqual(try SecretBytes(utf8: text).utf8String(), text)
+		#expect(try SecretBytes(utf8: text).utf8String() == text)
 	}
 
-	func testEmptyTextIsRejected() throws {
-		XCTAssertThrowsError(try SecretBytes(utf8: "")) { error in
-			XCTAssertEqual(error as? SecretBytesError, .emptySecret)
+	@Test func emptyTextIsRejected() throws {
+		#expect(throws: SecretBytesError.emptySecret) {
+			try SecretBytes(utf8: "")
 		}
 	}
 
-	func testNonUTF8BytesRefuseMaterialization() throws {
+	@Test func nonUTF8BytesRefuseMaterialization() throws {
 		//0xFF is never a valid UTF-8 lead byte
 		let secret = try SecretBytes(bytes: [0x41, 0xFF, 0x42])
-		XCTAssertThrowsError(try secret.utf8String()) { error in
-			XCTAssertEqual(error as? SecretBytesError, .notUTF8)
+		#expect(throws: SecretBytesError.notUTF8) {
+			try secret.utf8String()
 		}
 	}
 
-	func testMaterializingDoesNotExposeTheWrappedValue() throws {
+	@Test func materializingDoesNotExposeTheWrappedValue() throws {
 		let secret = try SecretBytes(utf8: "super-secret-token")
-		XCTAssertFalse("\(secret)".contains("super-secret-token"))
-		XCTAssertEqual(secret.byteCount, 18)
+		#expect(!"\(secret)".contains("super-secret-token"))
+		#expect(secret.byteCount == 18)
 	}
 }

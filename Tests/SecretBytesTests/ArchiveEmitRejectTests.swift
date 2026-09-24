@@ -1,6 +1,6 @@
 import Crypto
 import Foundation
-import XCTest
+import Testing
 
 @testable import SecretBytes
 
@@ -16,7 +16,7 @@ import XCTest
 /// successful encode below has already been offered to the decoder's own
 /// validator; these tests exist to *drive shapes at it* that hand-written
 /// vectors would not reach.
-final class ArchiveEmitRejectTests: XCTestCase {
+@Suite struct ArchiveEmitRejectTests {
 
 	// MARK: Depth — the third instance of the class
 
@@ -36,23 +36,23 @@ final class ArchiveEmitRejectTests: XCTestCase {
 	/// throw `malformedArchive` on every attempt to restore it. Strictly more
 	/// reachable than the other two instances: this needs only a *synthesized*
 	/// conformance and data that happens to be deep.
-	func testDeeplyNestedValueIsRejectedAtEncodeNotAfterSealing() throws {
-		XCTAssertThrowsError(try SecretArchive(encoding: Tree(depth: 80))) { error in
-			XCTAssertEqual(error as? SecretArchiveError, .nestingTooDeep)
+	@Test func deeplyNestedValueIsRejectedAtEncodeNotAfterSealing() throws {
+		#expect(throws: SecretArchiveError.nestingTooDeep) {
+			try SecretArchive(encoding: Tree(depth: 80))
 		}
 	}
 
 	/// The bound has to admit what the decoder admits, or the fix trades a
 	/// silent corruption for a false rejection.
-	func testNestingWithinTheLimitStillRoundTrips() throws {
+	@Test func nestingWithinTheLimitStillRoundTrips() throws {
 		// SE-0295 wraps each level in a keyed container, so a `Tree` of depth d
 		// nests roughly 2d deep on the wire; 24 stays clear of the limit.
 		let value = Tree(depth: 24)
-		XCTAssertEqual(try SecretArchive(encoding: value).decode(Tree.self), value)
+		#expect(try SecretArchive(encoding: value).decode(Tree.self) == value)
 	}
 
 	/// Plain containers reach the same limit without any recursive type.
-	func testDeepNestedContainerChainIsRejected() throws {
+	@Test func deepNestedContainerChainIsRejected() throws {
 		struct DeepChain: Encodable {
 			enum K: String, CodingKey { case next }
 			let levels: Int
@@ -65,8 +65,8 @@ final class ArchiveEmitRejectTests: XCTestCase {
 				}
 			}
 		}
-		XCTAssertThrowsError(try SecretArchive(encoding: DeepChain(levels: 80))) {
-			XCTAssertEqual($0 as? SecretArchiveError, .nestingTooDeep)
+		#expect(throws: SecretArchiveError.nestingTooDeep) {
+			try SecretArchive(encoding: DeepChain(levels: 80))
 		}
 	}
 
@@ -84,15 +84,15 @@ final class ArchiveEmitRejectTests: XCTestCase {
 	/// tests above both nest via `nestedContainer`, whose own check covers
 	/// them — so without this one, deleting `wrap`'s guard changed nothing and
 	/// the suite stayed green.
-	func testDepthReachedThroughTheFunnelIsRejected() throws {
-		XCTAssertThrowsError(try SecretArchive(encoding: Chain(depth: 80))) { error in
-			XCTAssertEqual(error as? SecretArchiveError, .nestingTooDeep)
+	@Test func depthReachedThroughTheFunnelIsRejected() throws {
+		#expect(throws: SecretArchiveError.nestingTooDeep) {
+			try SecretArchive(encoding: Chain(depth: 80))
 		}
 	}
 
-	func testFunnelNestingWithinTheLimitRoundTrips() throws {
+	@Test func funnelNestingWithinTheLimitRoundTrips() throws {
 		let value = Chain(depth: 30)
-		XCTAssertEqual(try SecretArchive(encoding: value).decode(Chain.self), value)
+		#expect(try SecretArchive(encoding: value).decode(Chain.self) == value)
 	}
 
 	// MARK: The boundary itself — every node kind, both sides of the limit
@@ -125,25 +125,26 @@ final class ArchiveEmitRejectTests: XCTestCase {
 	/// This sweeps *both sides* of the boundary for each node kind, which the
 	/// previous depth tests did not: their deepest case sat seven levels short
 	/// of it, so the region where an off-by-one lives was never visited.
-	func testEveryNodeKindRespectsTheDepthBoundary() throws {
+	@Test func everyNodeKindRespectsTheDepthBoundary() throws {
 		for tail in [DeepTail.Tail.primitive, .unusedSuper, .emptyContainer] {
 			for levels in [62, 63] {
-				XCTAssertNoThrow(
+				#expect(
+					throws: Never.self,
+					"\(tail) at \(levels) is within the limit and must encode"
+				) {
 					try SecretArchive(
-						encoding: DeepTail(levels: levels, tail: tail)),
-					"\(tail) at \(levels) is within the limit and must encode")
+						encoding: DeepTail(levels: levels, tail: tail))
+				}
 			}
 			for levels in [64, 65] {
-				XCTAssertThrowsError(
-					try SecretArchive(
-						encoding: DeepTail(levels: levels, tail: tail)),
+				// Must be the caller-data error, not the DEBUG net's generic
+				// one — the net is compiled out of release.
+				#expect(
+					throws: SecretArchiveError.nestingTooDeep,
 					"\(tail) at \(levels) exceeds the limit"
-				) { error in
-					// Must be the caller-data error, not the DEBUG net's
-					// generic one — the net is compiled out of release.
-					XCTAssertEqual(
-						error as? SecretArchiveError, .nestingTooDeep,
-						"\(tail) at \(levels) must report nestingTooDeep")
+				) {
+					try SecretArchive(
+						encoding: DeepTail(levels: levels, tail: tail))
 				}
 			}
 		}
@@ -153,15 +154,15 @@ final class ArchiveEmitRejectTests: XCTestCase {
 	/// passes in every build configuration. Driving it directly proves the
 	/// bound holds where the DEBUG self-validation is absent — the archive-level
 	/// test above cannot distinguish the two in a debug build.
-	func testSerializerSizeWalkEnforcesDepthWithoutTheDebugNet() throws {
+	@Test func serializerSizeWalkEnforcesDepthWithoutTheDebugNet() throws {
 		func nest(_ depth: Int) -> ArchiveNode {
 			var node = ArchiveNode(.bool(true))
 			for _ in 0..<depth { node = ArchiveNode(.array([node])) }
 			return node
 		}
-		XCTAssertNoThrow(try ArchiveSerializer.size(nest(64)))
-		XCTAssertThrowsError(try ArchiveSerializer.size(nest(65))) { error in
-			XCTAssertEqual(error as? SecretArchiveError, .nestingTooDeep)
+		#expect(throws: Never.self) { try ArchiveSerializer.size(nest(64)) }
+		#expect(throws: SecretArchiveError.nestingTooDeep) {
+			try ArchiveSerializer.size(nest(65))
 		}
 	}
 
@@ -173,19 +174,22 @@ final class ArchiveEmitRejectTests: XCTestCase {
 	/// `+inf`: a finite stored value replaced by a different one, silently.
 	/// The first round of this fix caught only the overflow half and claimed
 	/// `JSONDecoder` parity — Foundation rejects both.
-	func testFloatUnderflowAndOverflowBothRejected() throws {
+	@Test func floatUnderflowAndOverflowBothRejected() throws {
 		for value in [1e300, -1e300, 1e-300, 1e-46, -1e-300] {
 			let archive = try SecretArchive(encoding: ["v": value])
-			XCTAssertThrowsError(
-				try archive.decode(FloatField.self),
-				"\(value) is not representable as Float and must not decode")
+			#expect(
+				throws: (any Error).self,
+				"\(value) is not representable as Float and must not decode"
+			) {
+				try archive.decode(FloatField.self)
+			}
 		}
 	}
 
 	/// The boundaries the guard must not over-reach: the largest and smallest
 	/// magnitudes `Float` genuinely represents, plus the values that are
 	/// legitimately zero, infinite, or NaN.
-	func testFloatBoundariesAndNonFiniteValuesStillDecode() throws {
+	@Test func floatBoundariesAndNonFiniteValuesStillDecode() throws {
 		let representable: [Double] = [
 			0.0, -0.0,
 			0.1,  // precision loss is fine
@@ -196,12 +200,12 @@ final class ArchiveEmitRejectTests: XCTestCase {
 		for value in representable {
 			let archive = try SecretArchive(encoding: ["v": value])
 			let decoded = try archive.decode(FloatField.self).v
-			XCTAssertEqual(decoded, Float(value), "\(value) must still decode")
-			XCTAssertEqual(
-				decoded.sign, Float(value).sign, "\(value) must keep its sign")
+			#expect(decoded == Float(value), "\(value) must still decode")
+			#expect(
+				decoded.sign == Float(value).sign, "\(value) must keep its sign")
 		}
 		let nan = try SecretArchive(encoding: ["v": Double.nan])
-		XCTAssertTrue(try nan.decode(FloatField.self).v.isNaN)
+		#expect(try nan.decode(FloatField.self).v.isNaN)
 	}
 
 	// MARK: Generic sweep — shapes no hand-written vector would reach
@@ -216,7 +220,7 @@ final class ArchiveEmitRejectTests: XCTestCase {
 	/// This is the part that generalizes: depth survived four review passes
 	/// because no existing test happened to nest deeply, not because anyone
 	/// decided it was safe.
-	func testShapeSweepEncodesAndDecodes() throws {
+	@Test func shapeSweepEncodesAndDecodes() throws {
 		struct Cell: Codable, Equatable {
 			var text: String
 			var number: Int64
@@ -249,14 +253,14 @@ final class ArchiveEmitRejectTests: XCTestCase {
 				list: Array(0..<(i % 4)),
 				map: i % 2 == 0 ? [:] : ["k\(i)": i])
 			let archive = try SecretArchive(encoding: cell)
-			XCTAssertEqual(try archive.decode(Cell.self), cell, "cell \(i)")
+			#expect(try archive.decode(Cell.self) == cell, "cell \(i)")
 		}
 	}
 
 	/// The same sweep over nesting depth specifically, on both container kinds,
 	/// right up to the boundary — the region where an off-by-one between the
 	/// encoder's new bound and the decoder's would show up.
-	func testNestingDepthSweepAgreesOnBothSides() throws {
+	@Test func nestingDepthSweepAgreesOnBothSides() throws {
 		struct Nest: Codable, Equatable {
 			var depth: Int
 			var payload: [Int]
@@ -292,7 +296,7 @@ final class ArchiveEmitRejectTests: XCTestCase {
 		for depth in [0, 1, 8, 32, 55] {
 			let value = Nest(depth: depth, payload: [1, 2, 3])
 			let archive = try SecretArchive(encoding: value)
-			XCTAssertEqual(try archive.decode(Nest.self), value, "depth \(depth)")
+			#expect(try archive.decode(Nest.self) == value, "depth \(depth)")
 		}
 	}
 }

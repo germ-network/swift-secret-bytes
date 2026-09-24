@@ -1,6 +1,6 @@
 import Crypto
 import Foundation
-import XCTest
+import Testing
 
 @testable import SecretBytes
 
@@ -8,7 +8,7 @@ import XCTest
 /// initial Codable-archive implementation: each of these reproducibly failed
 /// against the code as it landed, and each failure mode is distinct from what
 /// the existing suites already cover.
-final class ArchiveStage5RegressionTests: XCTestCase {
+@Suite struct ArchiveStage5RegressionTests {
 	/// Builds an archive directly from raw wire bytes, for hostile shapes the
 	/// ordinary `Codable` funnel cannot produce (the encoder never emits an
 	/// integer key outside `Int`'s range, or a non-canonical simple-value
@@ -29,43 +29,43 @@ final class ArchiveStage5RegressionTests: XCTestCase {
 	/// The encoder always emits every non-NaN double as `0xFB` + 8 bytes (see
 	/// `ArchiveSerializer.emit`), so this was encoder-produces,
 	/// decoder-rejects — silent at seal time, discovered only on restore.
-	func testZeroDoubleRoundTrips() throws {
+	@Test func zeroDoubleRoundTrips() throws {
 		struct S: Codable, Equatable { var v: Double }
 		let archive = try SecretArchive(encoding: S(v: 0.0))
-		XCTAssertEqual(try archive.decode(S.self), S(v: 0.0))
+		#expect(try archive.decode(S.self) == S(v: 0.0))
 	}
 
-	func testZeroFloatRoundTrips() throws {
+	@Test func zeroFloatRoundTrips() throws {
 		struct S: Codable, Equatable { var v: Float }
 		let archive = try SecretArchive(encoding: S(v: 0.0))
-		XCTAssertEqual(try archive.decode(S.self), S(v: 0.0))
+		#expect(try archive.decode(S.self) == S(v: 0.0))
 	}
 
-	func testSubnormalDoubleRoundTrips() throws {
+	@Test func subnormalDoubleRoundTrips() throws {
 		struct S: Codable, Equatable { var v: Double }
 		let archive = try SecretArchive(encoding: S(v: .leastNonzeroMagnitude))
-		XCTAssertEqual(try archive.decode(S.self), S(v: .leastNonzeroMagnitude))
+		#expect(try archive.decode(S.self) == S(v: .leastNonzeroMagnitude))
 	}
 
 	/// `Date` encodes as a single `Double` (seconds since the reference date),
 	/// so the reference date itself — `0.0` — was exactly the value that
 	/// couldn't be read back.
-	func testDateAtReferenceEpochRoundTrips() throws {
+	@Test func dateAtReferenceEpochRoundTrips() throws {
 		struct S: Codable { var d: Date }
 		let a = try SecretArchive(encoding: S(d: Date(timeIntervalSinceReferenceDate: 0)))
-		XCTAssertEqual(try a.decode(S.self).d.timeIntervalSinceReferenceDate, 0)
+		#expect(try a.decode(S.self).d.timeIntervalSinceReferenceDate == 0)
 	}
 
 	/// A non-canonical encoding of `false` — additional-info 24 (one-byte
 	/// simple-value form) carrying 20, instead of the canonical inline form —
 	/// must still be rejected now that the shortest-form check no longer
 	/// covers major 7. Hand-built because the encoder never emits this form.
-	func testNonCanonicalSimpleValueEncodingStillRejected() throws {
+	@Test func nonCanonicalSimpleValueEncodingStillRejected() throws {
 		struct S: Codable { var v: Bool }
 		// a1 6176 f8 14   {"v": <one-byte-simple 0x14=20, i.e. non-canonical false>}
 		let bytes: [UInt8] = [0xA1, 0x61, 0x76, 0xF8, 0x14]
-		XCTAssertThrowsError(try archive(bytes).decode(S.self)) { error in
-			XCTAssertEqual(error as? SecretArchiveError, .malformedArchive)
+		#expect(throws: SecretArchiveError.malformedArchive) {
+			try archive(bytes).decode(S.self)
 		}
 	}
 
@@ -74,10 +74,10 @@ final class ArchiveStage5RegressionTests: XCTestCase {
 	/// `UInt64` values above `Int64.max` — a hash fragment, a random nonce —
 	/// used to be unreadable even into a field that could hold them, because
 	/// decoding narrowed through `Int64` first.
-	func testUInt64MaxRoundTrips() throws {
+	@Test func uInt64MaxRoundTrips() throws {
 		struct S: Codable, Equatable { var v: UInt64 }
 		let a = try SecretArchive(encoding: S(v: .max))
-		XCTAssertEqual(try a.decode(S.self), S(v: .max))
+		#expect(try a.decode(S.self) == S(v: .max))
 	}
 
 	/// A map key larger than `Int.max` used to abort the process inside
@@ -89,22 +89,22 @@ final class ArchiveStage5RegressionTests: XCTestCase {
 	/// holds the sealing key (e.g. `SecretArchive.Embedded` from elsewhere).
 	/// The key has no text representation, so it decodes to an empty
 	/// dictionary rather than surfacing — the point is that it must not trap.
-	func testOutOfRangeUnsignedMapKeyDoesNotTrapDictionaryDecode() throws {
+	@Test func outOfRangeUnsignedMapKeyDoesNotTrapDictionaryDecode() throws {
 		// a1 1b ffffffffffffffff 01   {18446744073709551615: 1}
 		let bytes: [UInt8] = [
 			0xA1, 0x1B, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0x01,
 		]
-		XCTAssertEqual(try archive(bytes).decode([String: Int].self), [:])
+		#expect(try archive(bytes).decode([String: Int].self) == [:])
 	}
 
 	/// Same hazard on the negative side: a wire key of `-1 - UInt64.max`,
 	/// which has no `Int64` representation at all.
-	func testOutOfRangeNegativeMapKeyDoesNotTrapDictionaryDecode() throws {
+	@Test func outOfRangeNegativeMapKeyDoesNotTrapDictionaryDecode() throws {
 		// a1 3b ffffffffffffffff 01   {-18446744073709551616: 1}
 		let bytes: [UInt8] = [
 			0xA1, 0x3B, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0x01,
 		]
-		XCTAssertEqual(try archive(bytes).decode([String: Int].self), [:])
+		#expect(try archive(bytes).decode([String: Int].self) == [:])
 	}
 
 	// MARK: superEncoder / superDecoder (used to silently drop fields)
@@ -147,11 +147,11 @@ final class ArchiveStage5RegressionTests: XCTestCase {
 	/// subclass's map node instead of nesting under a `"super"` key, so
 	/// `encode` succeeded and silently produced `{"a": 11}` — `b` vanished
 	/// with no error raised anywhere.
-	func testClassInheritanceEncodesBothLevelsThroughKeyedSuper() throws {
+	@Test func classInheritanceEncodesBothLevelsThroughKeyedSuper() throws {
 		let a = try SecretArchive(encoding: Derived(a: 11, b: 22))
 		let restored = try a.decode(Derived.self)
-		XCTAssertEqual(restored.a, 11)
-		XCTAssertEqual(restored.b, 22)
+		#expect(restored.a == 11)
+		#expect(restored.b == 22)
 	}
 
 	private struct UnkeyedSuperCarrier: Codable, Equatable {
@@ -189,10 +189,10 @@ final class ArchiveStage5RegressionTests: XCTestCase {
 	/// pre-bound to a node it already inserted, and a single-value container
 	/// is the shape most likely to orphan that reference by reassigning
 	/// rather than mutating it.
-	func testUnkeyedSuperEncoderRoundTrips() throws {
+	@Test func unkeyedSuperEncoderRoundTrips() throws {
 		let value = UnkeyedSuperCarrier(a: 1, b: 2, superValue: 99)
 		let a = try SecretArchive(encoding: value)
-		XCTAssertEqual(try a.decode(UnkeyedSuperCarrier.self), value)
+		#expect(try a.decode(UnkeyedSuperCarrier.self) == value)
 	}
 
 	// MARK: Encode-side duplicate key (was reported as a decode-side error)
@@ -209,9 +209,9 @@ final class ArchiveStage5RegressionTests: XCTestCase {
 	/// A schema encoding the same key twice is a caller bug, not a wire-format
 	/// defect — `.malformedArchive` is documented as describing untrusted
 	/// bytes on parse, so this used to report the wrong case.
-	func testEncodeSideDuplicateKeyReportsInternalFailure() throws {
-		XCTAssertThrowsError(try SecretArchive(encoding: DuplicateKeyWriter())) { error in
-			XCTAssertEqual(error as? SecretArchiveError, .internalEncodingFailure)
+	@Test func encodeSideDuplicateKeyReportsInternalFailure() throws {
+		#expect(throws: SecretArchiveError.internalEncodingFailure) {
+			try SecretArchive(encoding: DuplicateKeyWriter())
 		}
 	}
 }
