@@ -215,6 +215,29 @@ private struct ArchiveKeyedDecodingContainer<Key: CodingKey>: KeyedDecodingConta
 	let entries: [(key: IndexNode.IndexKey, keyBytes: Range<Int>, value: IndexNode)]
 	var codingPath: [any CodingKey]
 
+	/// Without it an N-key map decodes in O(N²). Small maps (ordinary
+	/// structs) skip it: in a release build, scanning beats hashing up to
+	/// ~28 text keys, and further for integer keys.
+	/// Validation already rejects duplicate wire keys, so first-wins never
+	/// discards an entry.
+	private let index: [IndexNode.IndexKey: IndexNode]?
+
+	init(
+		decoder: ArchiveDecoder,
+		entries: [(key: IndexNode.IndexKey, keyBytes: Range<Int>, value: IndexNode)],
+		codingPath: [any CodingKey]
+	) {
+		self.decoder = decoder
+		self.entries = entries
+		self.codingPath = codingPath
+		self.index =
+			entries.count > 32
+			? Dictionary(
+				entries.map { ($0.key, $0.value) },
+				uniquingKeysWith: { first, _ in first })
+			: nil
+	}
+
 	/// Mirrors `node(for:)`'s gating: integer wire keys only surface through a
 	/// key type that opted in, and only when they fit `Int` — an
 	/// attacker-controlled archive can carry an integer key of any width, and
@@ -255,25 +278,18 @@ private struct ArchiveKeyedDecodingContainer<Key: CodingKey>: KeyedDecodingConta
 	/// wire forms for one value and a shadowing channel into a COSE_Key,
 	/// which is precisely the shape integer keying exists to serve.
 	private func node(for key: Key) -> IndexNode? {
+		let wireKey: IndexNode.IndexKey
 		if Key.self is any ArchiveIntegerCodingKey.Type, let i = key.intValue {
-			for entry in entries {
-				switch entry.key {
-				case .uint(let v) where i >= 0 && UInt64(i) == v:
-					return entry.value
-				case .negative(let v) where i < 0 && UInt64(-1 - Int64(i)) == v:
-					return entry.value
-				default:
-					continue
-				}
-			}
-			return nil
+			wireKey = i < 0 ? .negative(UInt64(-1 - Int64(i))) : .uint(UInt64(i))
+		} else {
+			wireKey = .text(key.stringValue)
 		}
-		for entry in entries {
-			if case .text(let s) = entry.key, s == key.stringValue {
-				return entry.value
-			}
-		}
-		return nil
+		return lookup(wireKey)
+	}
+
+	private func lookup(_ wireKey: IndexNode.IndexKey) -> IndexNode? {
+		if let index { return index[wireKey] }
+		return entries.first { $0.key == wireKey }?.value
 	}
 
 	private func require(_ key: Key) throws -> IndexNode {
@@ -363,16 +379,12 @@ private struct ArchiveKeyedDecodingContainer<Key: CodingKey>: KeyedDecodingConta
 
 	/// Mirrors the encoder's `"super"`-keyed convention.
 	func superDecoder() throws -> any Decoder {
-		for entry in entries {
-			if case .text("super") = entry.key {
-				return ArchiveDecoder(
-					archive: decoder.archive, node: entry.value,
-					codingPath: codingPath)
-			}
+		guard let node = lookup(.text("super")) else {
+			throw DecodingError.keyNotFound(
+				SuperCodingKey(),
+				.init(codingPath: codingPath, debugDescription: "no super key"))
 		}
-		throw DecodingError.keyNotFound(
-			SuperCodingKey(),
-			.init(codingPath: codingPath, debugDescription: "no super key"))
+		return ArchiveDecoder(archive: decoder.archive, node: node, codingPath: codingPath)
 	}
 
 	func superDecoder(forKey key: Key) throws -> any Decoder {

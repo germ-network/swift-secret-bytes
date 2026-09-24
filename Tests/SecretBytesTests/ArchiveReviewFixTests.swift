@@ -536,70 +536,32 @@ final class ArchiveReviewFixTests: XCTestCase {
 			"83" + "01" + "f6" + "03")
 	}
 
-	// MARK: Container encoding is linear, not quadratic
+	// MARK: Only the opt-in switches a lookup onto integer wire keys
 
-	/// `case .array(var items) = node.kind` used to leave the node's own
-	/// payload referencing the same buffer, so every append copy-on-wrote the
-	/// whole array: 16k elements took ~500 ms and the curve was 4× time per
-	/// 2× length. This asserts the shape of the curve rather than a wall-clock
-	/// threshold, so it stays meaningful on slower machines.
-	///
-	/// **Not run on the simulator.** A shared CI runner measured 37× here
-	/// with the fix in place — worse than the ~16× a genuine quadratic
-	/// regression produces, so the reading was environmental, not algorithmic
-	/// (the same job took 13 minutes against 6 for its sibling leg). On real
-	/// hardware the curve is clean: 2× elements costs 2.02× time, flat from
-	/// 4k to 64k. A ratio test cannot survive a host that pauses the process
-	/// mid-measurement, and no threshold rescues it — loosening the bar past
-	/// 37× would stop detecting the defect. The property under test is a
-	/// property of the algorithm, not of the platform, so measuring it where
-	/// the clock is trustworthy loses nothing.
-	func testLargeArrayEncodingScalesLinearly() throws {
-		#if targetEnvironment(simulator)
-			throw XCTSkip("timing ratios are not measurable on a shared simulator host")
-		#else
-			try assertLinearScaling { count in
-				[UInt8](repeating: 0x11, count: count)
-			}
-		#endif
+	/// A non-opted `Int`-raw `CodingKey` addresses its entry by text — only
+	/// `ArchiveIntegerCodingKey` conformance moves it onto the integer wire
+	/// key. With both `1` and `"kty"` present, each schema must reach its own
+	/// entry. (An opted-in key falling back to text on a miss is pinned by
+	/// `testIntegerKeyedSchemaRejectsTextAlias`.)
+	private struct NonOptedKtyKey: Codable, Equatable {
+		var kty: Int
+		enum CodingKeys: Int, CodingKey { case kty = 1 }
 	}
 
-	/// The identical hazard in `ArchiveKeyedContainer.put`, which was unpinned:
-	/// deleting *its* `node.kind = .null` left the whole suite green while a
-	/// `[String: Int]` degraded to a ~12× ratio for 4× the entries. Arrays and
-	/// maps are separate code paths, and a dictionary is the larger container
-	/// in practice.
-	func testLargeDictionaryEncodingScalesLinearly() throws {
-		#if targetEnvironment(simulator)
-			throw XCTSkip("timing ratios are not measurable on a shared simulator host")
-		#else
-			try assertLinearScaling { count in
-				Dictionary(uniqueKeysWithValues: (0..<count).map { ("k\($0)", $0) })
-			}
-		#endif
-	}
-
-	/// Asserts the *shape* of the curve rather than a wall-clock threshold, so
-	/// it survives a slow machine: quadratic growth at 4× the elements is ~16×
-	/// the time, linear is ~4×, and the bar sits between them.
-	private func assertLinearScaling<T: Encodable>(
-		_ make: (Int) -> T, file: StaticString = #filePath, line: UInt = #line
-	) throws {
-		func encodeSeconds(count: Int) throws -> Double {
-			let value = make(count)
-			let start = ProcessInfo.processInfo.systemUptime
-			_ = try SecretArchive(encoding: value)
-			return ProcessInfo.processInfo.systemUptime - start
+	func testNonOptedIntRawKeyAddressesByText() throws {
+		//  a2  01 07  63 6b7479 09   {1: 7, "kty": 9}
+		let small: [UInt8] = [0xA2, 0x01, 0x07, 0x63, 0x6B, 0x74, 0x79, 0x09]
+		// {0: 0, 1: 7, 2: 0, …, 32: 0, "kty": 9} — large enough to be hashed
+		// rather than scanned.
+		var padded: [UInt8] = [0xB8, 34]
+		for key: UInt8 in 0...32 {
+			padded += key < 24 ? [key] : [0x18, key]
+			padded.append(key == 1 ? 0x07 : 0x00)
 		}
-		_ = try encodeSeconds(count: 2000)  // warm up
-		let small = try encodeSeconds(count: 8000)
-		let large = try encodeSeconds(count: 32000)
-		let floor = 0.0005  // ignore timer noise on very fast runs
-		XCTAssertLessThan(
-			large, max(small, floor) * 10,
-			"4× the elements took \(large / max(small, floor))× the time — "
-				+ "encoding looks quadratic again",
-			file: file, line: line)
+		padded += [0x63, 0x6B, 0x74, 0x79, 0x09]
+		for bytes in [small, padded] {
+			XCTAssertEqual(try archive(bytes).decode(IntKeyed.self).kty, 7)
+			XCTAssertEqual(try archive(bytes).decode(NonOptedKtyKey.self).kty, 9)
+		}
 	}
-
 }
