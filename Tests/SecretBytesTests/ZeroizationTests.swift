@@ -49,8 +49,8 @@ import Testing
 
 		/// The load-bearing mutation test: if `deinit` stops scrubbing, the
 		/// witness reads back non-zero and this fails.
-		@Test func deinitScrubsBeforeRelease() throws {
-			try ZeroizingBuffer.ScrubWitness.$armed.withValue(true) {
+		@Test func deinitScrubsBeforeRelease() {
+			ZeroizingBuffer.ScrubWitness.$armed.withValue(true) {
 				ZeroizingBuffer.ScrubWitness.lastDeinitAllZero = nil
 
 				do {
