@@ -1,5 +1,16 @@
 # @germ-network/swift-secret-bytes
 
+## 0.7.1
+
+### Patch Changes
+
+- [#21](https://github.com/germ-network/swift-secret-bytes/pull/21) [`a20ea09`](https://github.com/germ-network/swift-secret-bytes/commit/a20ea09887f8a5a3a7d55baf11bf77dc80efb676) Thanks [@germ-mark](https://github.com/germ-mark)! - Keyed-container decode lookups were a linear scan of the map's entries per
+  key, so decoding an N-key map via `allKeys` + `decode(forKey:)` — the shape
+  every keyed-container consumer, including Swift's own `[String: V]` decoding,
+  actually uses — was quadratic: 100k keys took minutes. Lookups now go through
+  a hashed index built once per container, so decode time is linear in the
+  number of keys again.
+
 ## 0.7.0
 
 ### Minor Changes
