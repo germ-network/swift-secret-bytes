@@ -216,7 +216,8 @@ private struct ArchiveKeyedDecodingContainer<Key: CodingKey>: KeyedDecodingConta
 	var codingPath: [any CodingKey]
 
 	/// Without it an N-key map decodes in O(N²). Small maps (ordinary
-	/// structs) skip it: scanning a few entries is cheaper than hashing.
+	/// structs) skip it: in a release build, scanning beats hashing up to
+	/// ~28 text keys, and further for integer keys.
 	/// Validation already rejects duplicate wire keys, so first-wins never
 	/// discards an entry.
 	private let index: [IndexNode.IndexKey: IndexNode]?
@@ -230,7 +231,7 @@ private struct ArchiveKeyedDecodingContainer<Key: CodingKey>: KeyedDecodingConta
 		self.entries = entries
 		self.codingPath = codingPath
 		self.index =
-			entries.count > 8
+			entries.count > 32
 			? Dictionary(
 				entries.map { ($0.key, $0.value) },
 				uniquingKeysWith: { first, _ in first })

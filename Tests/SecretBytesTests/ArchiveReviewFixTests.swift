@@ -551,10 +551,13 @@ final class ArchiveReviewFixTests: XCTestCase {
 	func testNonOptedIntRawKeyAddressesByText() throws {
 		//  a2  01 07  63 6b7479 09   {1: 7, "kty": 9}
 		let small: [UInt8] = [0xA2, 0x01, 0x07, 0x63, 0x6B, 0x74, 0x79, 0x09]
-		// {0: 0, 1: 7, 2: 0, …, 9: 0, "kty": 9} — large enough to be hashed
+		// {0: 0, 1: 7, 2: 0, …, 32: 0, "kty": 9} — large enough to be hashed
 		// rather than scanned.
-		var padded: [UInt8] = [0xAB]
-		for key: UInt8 in 0...9 { padded += [key, key == 1 ? 0x07 : 0x00] }
+		var padded: [UInt8] = [0xB8, 34]
+		for key: UInt8 in 0...32 {
+			padded += key < 24 ? [key] : [0x18, key]
+			padded.append(key == 1 ? 0x07 : 0x00)
+		}
 		padded += [0x63, 0x6B, 0x74, 0x79, 0x09]
 		for bytes in [small, padded] {
 			XCTAssertEqual(try archive(bytes).decode(IntKeyed.self).kty, 7)
