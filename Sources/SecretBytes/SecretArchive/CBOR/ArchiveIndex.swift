@@ -20,7 +20,7 @@ final class IndexNode {
 		case map([(key: IndexKey, keyBytes: Range<Int>, value: IndexNode)])
 	}
 
-	enum IndexKey: Equatable {
+	enum IndexKey: Hashable {
 		case uint(UInt64)
 		case negative(UInt64)
 		case text(String)

@@ -559,7 +559,7 @@ final class ArchiveReviewFixTests: XCTestCase {
 			throw XCTSkip("timing ratios are not measurable on a shared simulator host")
 		#else
 			try assertLinearScaling { count in
-				[UInt8](repeating: 0x11, count: count)
+				try timeEncoding([UInt8](repeating: 0x11, count: count))
 			}
 		#endif
 	}
@@ -574,32 +574,149 @@ final class ArchiveReviewFixTests: XCTestCase {
 			throw XCTSkip("timing ratios are not measurable on a shared simulator host")
 		#else
 			try assertLinearScaling { count in
-				Dictionary(uniqueKeysWithValues: (0..<count).map { ("k\($0)", $0) })
+				try timeEncoding(
+					Dictionary(
+						uniqueKeysWithValues: (0..<count).map {
+							("k\($0)", $0)
+						}))
 			}
 		#endif
+	}
+
+	// MARK: Keyed-container decode is linear, not quadratic
+
+	/// Opted into integer wire keys, so lookups address `uint`/`negative` wire
+	/// keys rather than text.
+	private struct ArchiveIntegerKey: CodingKey, ArchiveIntegerCodingKey {
+		let intValue: Int?
+		var stringValue: String { "k\(intValue ?? 0)" }
+		init(intValue: Int) { self.intValue = intValue }
+		init?(stringValue: String) { nil }
+	}
+
+	/// Decodes the way downstream schemas actually do: `allKeys` then
+	/// `decode(forKey:)` per key, so a per-key linear scan shows up here just
+	/// as it would in real code, not only in a microbenchmark of `node(for:)`
+	/// directly.
+	private struct IntegerKeyedMap: Codable {
+		var values: [Int: Int]
+		init(values: [Int: Int]) { self.values = values }
+		func encode(to encoder: Encoder) throws {
+			var c = encoder.container(keyedBy: ArchiveIntegerKey.self)
+			for (key, value) in values {
+				try c.encode(value, forKey: ArchiveIntegerKey(intValue: key))
+			}
+		}
+		init(from decoder: Decoder) throws {
+			let c = try decoder.container(keyedBy: ArchiveIntegerKey.self)
+			var result: [Int: Int] = [:]
+			for key in c.allKeys {
+				result[key.intValue!] = try c.decode(Int.self, forKey: key)
+			}
+			values = result
+		}
+	}
+
+	/// `node(for:)` used to scan `entries` per key, so decoding an N-key map
+	/// via `allKeys` + `decode(forKey:)` — the shape every keyed-container
+	/// consumer uses — was O(N²). This is the integer-keyed path, addressed
+	/// through `ArchiveKeyedDecodingContainer`'s integer branch.
+	func testLargeIntegerKeyedMapDecodingScalesLinearly() throws {
+		#if targetEnvironment(simulator)
+			throw XCTSkip("timing ratios are not measurable on a shared simulator host")
+		#else
+			try assertLinearScaling { count in
+				let value = IntegerKeyedMap(
+					values: Dictionary(
+						uniqueKeysWithValues: (0..<count).map { ($0, $0) }))
+				let encoded = try SecretArchive(encoding: value)
+				return try timeDecoding(encoded, as: IntegerKeyedMap.self)
+			}
+		#endif
+	}
+
+	/// The text-keyed sibling: `[String: Int]`'s synthesized `init(from:)`
+	/// drives the same `allKeys` + `decode(forKey:)` shape over the
+	/// container's text branch.
+	func testLargeTextKeyedMapDecodingScalesLinearly() throws {
+		#if targetEnvironment(simulator)
+			throw XCTSkip("timing ratios are not measurable on a shared simulator host")
+		#else
+			try assertLinearScaling { count in
+				let value = Dictionary(
+					uniqueKeysWithValues: (0..<count).map { ("k\($0)", $0) })
+				let encoded = try SecretArchive(encoding: value)
+				return try timeDecoding(encoded, as: [String: Int].self)
+			}
+		#endif
+	}
+
+	// MARK: Only the opt-in switches a lookup onto integer wire keys
+
+	/// A non-opted `Int`-raw `CodingKey` addresses its entry by text — only
+	/// `ArchiveIntegerCodingKey` conformance moves it onto the integer wire
+	/// key. With both `1` and `"kty"` present, each schema must reach its own
+	/// entry. (An opted-in key falling back to text on a miss is pinned by
+	/// `testIntegerKeyedSchemaRejectsTextAlias`.)
+	private struct NonOptedKtyKey: Codable, Equatable {
+		var kty: Int
+		enum CodingKeys: Int, CodingKey { case kty = 1 }
+	}
+
+	func testNonOptedIntRawKeyAddressesByText() throws {
+		//  a2  01 07  63 6b7479 09   {1: 7, "kty": 9}
+		let small: [UInt8] = [0xA2, 0x01, 0x07, 0x63, 0x6B, 0x74, 0x79, 0x09]
+		// {0: 0, 1: 7, 2: 0, …, 9: 0, "kty": 9} — large enough to be hashed
+		// rather than scanned.
+		var padded: [UInt8] = [0xAB]
+		for key: UInt8 in 0...9 { padded += [key, key == 1 ? 0x07 : 0x00] }
+		padded += [0x63, 0x6B, 0x74, 0x79, 0x09]
+		for bytes in [small, padded] {
+			XCTAssertEqual(try archive(bytes).decode(IntKeyed.self).kty, 7)
+			XCTAssertEqual(try archive(bytes).decode(NonOptedKtyKey.self).kty, 9)
+		}
+	}
+
+	func testHashedLookupRoundTripsSignedIntegerKeys() throws {
+		let values = Dictionary(uniqueKeysWithValues: (-50..<50).map { ($0, $0 * 3) })
+		let encoded = try SecretArchive(encoding: IntegerKeyedMap(values: values))
+		XCTAssertEqual(try encoded.decode(IntegerKeyedMap.self).values, values)
 	}
 
 	/// Asserts the *shape* of the curve rather than a wall-clock threshold, so
 	/// it survives a slow machine: quadratic growth at 4× the elements is ~16×
 	/// the time, linear is ~4×, and the bar sits between them.
-	private func assertLinearScaling<T: Encodable>(
-		_ make: (Int) -> T, file: StaticString = #filePath, line: UInt = #line
+	///
+	/// `timing` measures only the operation under test — encode or decode —
+	/// with any setup (building the value, or the archive to decode from)
+	/// done outside it.
+	private func assertLinearScaling(
+		file: StaticString = #filePath, line: UInt = #line,
+		_ timing: (Int) throws -> Double
 	) throws {
-		func encodeSeconds(count: Int) throws -> Double {
-			let value = make(count)
-			let start = ProcessInfo.processInfo.systemUptime
-			_ = try SecretArchive(encoding: value)
-			return ProcessInfo.processInfo.systemUptime - start
-		}
-		_ = try encodeSeconds(count: 2000)  // warm up
-		let small = try encodeSeconds(count: 8000)
-		let large = try encodeSeconds(count: 32000)
+		_ = try timing(2000)  // warm up
+		let small = try timing(8000)
+		let large = try timing(32000)
 		let floor = 0.0005  // ignore timer noise on very fast runs
 		XCTAssertLessThan(
 			large, max(small, floor) * 10,
 			"4× the elements took \(large / max(small, floor))× the time — "
-				+ "encoding looks quadratic again",
+				+ "the operation looks quadratic again",
 			file: file, line: line)
+	}
+
+	private func timeEncoding<T: Encodable>(_ value: T) throws -> Double {
+		let start = ProcessInfo.processInfo.systemUptime
+		_ = try SecretArchive(encoding: value)
+		return ProcessInfo.processInfo.systemUptime - start
+	}
+
+	private func timeDecoding<T: Decodable>(_ archive: SecretArchive, as type: T.Type) throws
+		-> Double
+	{
+		let start = ProcessInfo.processInfo.systemUptime
+		_ = try archive.decode(type)
+		return ProcessInfo.processInfo.systemUptime - start
 	}
 
 }
